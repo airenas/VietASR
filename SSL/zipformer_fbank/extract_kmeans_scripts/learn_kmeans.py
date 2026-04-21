@@ -32,6 +32,7 @@ from lhotse.utils import fix_random_seed
 from lhotse.workarounds import Hdf5MemoryIssueFix
 from sklearn.cluster import MiniBatchKMeans
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from utils import get_avg_checkpoint
 
 logging.basicConfig(
@@ -61,6 +62,7 @@ def get_km_model(
     n_init,
     reassignment_ratio,
 ):
+    logger.info("Creating MiniBatchKMeans model")
     return MiniBatchKMeans(
         n_clusters=n_clusters,
         init=init,
@@ -210,6 +212,7 @@ def get_parser():
 
 
 def get_model(params, device):
+    logger.info(f"Prepare model: {params.checkpoint_type}")
     if params.checkpoint_type == "ASR":
         params.use_layer_norm = False
 
@@ -294,10 +297,21 @@ def learn_kmeans(
     part_feats_holder = []
     model = get_model(args, device)
 
-    for batch in train_dl:
+    ## pre-calculate the number of batches for tqdm
+    num_batches = sum(1 for _ in tqdm(train_dl, desc="Calculating number of batches"))
+    train_dl = finetune_datamoddule.test_dataloaders(cuts)
+
+    logger.info("Extracting features")
+    for batch in tqdm(train_dl, desc="Extracting features", total=num_batches):
         part_feats_holder.append(extract_feature(batch, model))
+    del model
+    del train_dl
+
+    logger.info("Concatenating features")
 
     part_feats = np.concatenate(part_feats_holder, axis=0)
+    del part_feats_holder
+
     logging.info(f"data size: {part_feats.shape}")
     if do_training:
         km_model.fit(part_feats)
