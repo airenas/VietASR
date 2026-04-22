@@ -249,6 +249,7 @@ def main(args):
     for src, tgt in tqdm.tqdm(task_lis):
         # if os.path.isfile(tgt):
         #     continue
+        logger.info(f"Processing {src} to {tgt}")
         cuts = CutSet.from_file(src)
         km_dict = {}
         finetune_datamoddule = FinetuneAsrDataModule(args)
@@ -272,6 +273,9 @@ def main(args):
 
 
 if __name__ == "__main__":
+    formatter = "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] %(message)s"
+    logging.basicConfig(format=formatter, level=logging.INFO)
+
     parser = get_parser()
     FinetuneAsrDataModule.add_arguments(parser)
     args = parser.parse_args()

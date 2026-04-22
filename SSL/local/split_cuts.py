@@ -39,9 +39,9 @@ def main():
     for cut in pbar:
         total += cut.duration
         pbar.update(cut.duration)
-    logging.info(f"Splitting into {args.split_into} parts")
 
     wanted_secs = total / args.split_into
+    logging.info(f"Splitting into {args.split_into} parts, by {wanted_secs:.2f} secs each, total {total:.2f} secs")
 
     cuts = load_manifest_lazy(args.input)
     pbar = tqdm(cuts, desc="Splitting", unit="s", total=total)
@@ -52,7 +52,7 @@ def main():
     def save_subset():
         nonlocal selected, total, num
         subset = CutSet.from_cuts(selected)
-        file_name = args.output_dir / f"cuts_pretrain_part{num:03d}.jsonl.gz"
+        file_name = args.output_dir / f"cuts_pretrain_{num:03d}.jsonl.gz"
         logging.info(f"Saving subset: {len(subset)} cuts, {total:.2f} secs to {file_name}")
         subset.to_file(file_name)        
         selected = []
@@ -63,7 +63,6 @@ def main():
         if total >= wanted_secs:
             save_subset()
         selected.append(cut)
-        total += cut.duration
         total += cut.duration
         pbar.update(cut.duration)
 

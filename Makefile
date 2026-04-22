@@ -49,6 +49,8 @@ info:
 	@echo "avg: $(avg)"
 	@echo "workers: $(workers)"
 	@echo "ssl_parts: $(ssl_parts)"	
+	@echo "ssl_feat_files: $(ssl_feat_files)"	
+		
 .PHONY: info	
 
 install_deps:
@@ -113,13 +115,16 @@ load/ssl: $(corpus_ssl_dir)/.loaded.ssl
 $(data_dir)/manifests/cuts_pretrain.jsonl.gz: $(corpus_ssl_dir)/.loaded.ssl | $(data_dir)/manifests 
 	$(python_cmd) ./SSL/local/prepare_ssl_corpus.py --corpus-dir $(corpus_ssl_dir) --output-file $@ --workers $(workers)
 
-$(data_dir)/manifests/.pretrain.split: $(data_dir)/manifests/cuts_pretrain.jsonl.gz
+shards := $(shell seq -f "%03g" 0 $$(($(ssl_parts)-1)))
+ssl_cuts_files := $(foreach r,$(shards),$(data_dir)/manifests/cuts_pretrain_$(r).jsonl.gz)	
+ssl_feat_files := $(foreach r,$(shards),$(data_dir)/fbank/cuts_pretrain_$(r).jsonl.gz)	
+
+$(ssl_cuts_files): $(data_dir)/manifests/cuts_pretrain.jsonl.gz
 	$(python_cmd) ./SSL/local/split_cuts.py --input $< --output-dir $(data_dir)/manifests --split-into $(ssl_parts)
-	touch $@
-$(data_dir)/fbank/.pretrain.calc: $(data_dir)/manifests/.pretrain.split
-	$(python_ssl_cmd) ./SSL/local/compute_fbank_vietASR_ssl_splits.py --num-splits $(ssl_parts) --manifest-dir $(data_dir)/manifests --output-dir $(data_dir)/fbank
-	touch $@
-prepare/ssl: $(data_dir)/fbank/.pretrain.calc
+$(data_dir)/fbank/%: $(data_dir)/manifests/% | $(data_dir)/fbank
+	$(python_ssl_cmd) ./SSL/local/compute_fbank.py --input $^ --output $@ 
+
+prepare/ssl: $(ssl_feat_files)
 .PHONY: prepare/ssl
 ##############################################################
 # Train Initial LIEPA3 model                                 #
