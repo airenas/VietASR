@@ -108,6 +108,8 @@ import k2
 import sentencepiece as spm
 import torch
 import torch.nn as nn
+from tqdm import tqdm
+
 from asr_datamodule import AsrDataModule
 from beam_search import (
     beam_search,
@@ -698,15 +700,11 @@ def decode_dataset(
     try:
         num_batches = len(dl)
     except TypeError:
-        num_batches = "?"
-
-    if params.decoding_method == "greedy_search":
-        log_interval = 50
-    else:
-        log_interval = 20
+        num_batches = None
 
     results = defaultdict(list)
-    for batch_idx, batch in enumerate(dl):
+    pbar = tqdm(dl, total=num_batches, desc="Decoding")
+    for batch_idx, batch in enumerate(pbar):
         texts = batch["supervisions"]["text"]
         cut_ids = [cut.id for cut in batch["supervisions"]["cut"]]
 
@@ -733,11 +731,8 @@ def decode_dataset(
             results[name].extend(this_batch)
 
         num_cuts += len(texts)
+        pbar.set_postfix(cuts=num_cuts)
 
-        if batch_idx % log_interval == 0:
-            batch_str = f"{batch_idx}/{num_batches}"
-
-            logging.info(f"batch {batch_str}, cuts processed until now is {num_cuts}")
     return results
 
 

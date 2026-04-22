@@ -14,11 +14,12 @@ limit_count?=100000000000000
 
 corpus_dir?=
 corpus_ln_dir?=corpus
+corpus_ssl_dir?=corpus_ssl
 start_epoch?=1
 gpus?=1
 
 epoch?=30
-avg?=15
+avg?=10
 
 ##############################################################
 download_dir?=data/download
@@ -28,10 +29,13 @@ lang_dir=$(data_dir)/lang_bpe_${vocab_size}
 lm_params?=
 max_duration?=1000
 seconds_train_kmeans?=360000
+workers?=4
+ssl_parts?=10
 
 $(download_dir) $(data_dir)/manifests $(data_dir)/fbank \
 	$(download_dir)/common_voice $(lang_dir) $(exp_dir) \
-	$(data_dir)/kmeans:
+	$(data_dir)/kmeans $(data_dir)/tasks \
+	$(corpus_ssl_dir):
 	mkdir -p $@
 info:
 	@echo "corpus_dir: $(corpus_dir)"
@@ -40,11 +44,15 @@ info:
 	@echo "gpus: $(gpus)"
 	@echo "train_params: $(train_params)"
 	@echo "seconds_train_kmeans: $(seconds_train_kmeans)"
-			
+	@echo "max_duration: $(max_duration)"
+	@echo "epoch: $(epoch)"
+	@echo "avg: $(avg)"
+	@echo "workers: $(workers)"
+	@echo "ssl_parts: $(ssl_parts)"	
 .PHONY: info	
 
 install_deps:
-	pip install joblib scikit-learn
+	pip install joblib scikit-learn einops botocore==1.42.59 boto3
 ##############################################################
 ##############################################################
 # Liepa 3 prepare											 #
@@ -78,6 +86,41 @@ $(data_dir)/fbank/cuts_train_100h.jsonl.gz: $(data_dir)/fbank/cuts_train.jsonl.g
 prepare/liepa3: $(data_dir)/fbank/.train.validated $(data_dir)/fbank/.dev.validated $(data_dir)/fbank/.test.validated $(lang_dir)/bpe.model \
 	$(data_dir)/fbank/cuts_train_100h.jsonl.gz
 .PHONY: prepare/liepa3
+############################################################
+### SSL DATA
+############################################################
+s3_from?=0
+s3_to?=5
+load/s3/%: | $(corpus_ssl_dir)
+	$(python_cmd) ./SSL/local/s3_dwn.py --s3-bucket audio-corpus/$* --dest-dir $(corpus_ssl_dir) \
+		--s3-from $(s3_from) --s3-to $(s3_to) --workers $(workers) 
+
+# one tar is 5 hours of audio, so 5 tars is 25 hours, which is a good chunk to process at once
+$(corpus_ssl_dir)/.loaded.ssl: | $(corpus_ssl_dir)
+	make load/s3/crawl s3_from=0 s3_to=4 
+# crawl-augmented 15h each
+	make load/s3/crawl-augmented s3_from=20 s3_to=21 
+	make load/s3/08kHz s3_from=0 s3_to=4 
+	make load/s3/16kHz s3_from=0 s3_to=4 
+	make load/s3/liepa3 s3_from=0 s3_to=4 
+	make load/s3/voxlingua s3_from=0 s3_to=4 
+# a lot of non lithuanian data, so skip
+#	make load/s3/voxpopuli s3_from=0 s3_to=4 
+	
+	touch $@
+load/ssl: $(corpus_ssl_dir)/.loaded.ssl
+.PHONY: load/ssl
+$(data_dir)/manifests/cuts_pretrain.jsonl.gz: $(corpus_ssl_dir)/.loaded.ssl | $(data_dir)/manifests 
+	$(python_cmd) ./SSL/local/prepare_ssl_corpus.py --corpus-dir $(corpus_ssl_dir) --output-file $@ --workers $(workers)
+
+$(data_dir)/manifests/.pretrain.split: $(data_dir)/manifests/cuts_pretrain.jsonl.gz
+	$(python_cmd) ./SSL/local/split_cuts.py --input $< --output-dir $(data_dir)/manifests --split-into $(ssl_parts)
+	touch $@
+$(data_dir)/fbank/.pretrain.calc: $(data_dir)/manifests/.pretrain.split
+	$(python_ssl_cmd) ./SSL/local/compute_fbank_vietASR_ssl_splits.py --num-splits $(ssl_parts) --manifest-dir $(data_dir)/manifests --output-dir $(data_dir)/fbank
+	touch $@
+prepare/ssl: $(data_dir)/fbank/.pretrain.calc
+.PHONY: prepare/ssl
 ##############################################################
 # Train Initial LIEPA3 model                                 #
 ##############################################################
@@ -88,7 +131,7 @@ train_params?=--use-fp16 1 --train-cuts 4000h --max-duration $(max_duration) --e
     --encoder-dim 256,512,768,1024,768,512 \
     --encoder-unmasked-dim 256,256,256,320,256,256 \
     --base-lr 0.045
-train: | $(exp_dir)
+train: $(data_dir)/fbank/cuts_train.jsonl.gz | $(exp_dir)
 	$(python_cmd) ./ASR/zipformer/train.py --world-size $(gpus) \
 		--num-epochs $(epoch) --start-epoch $(start_epoch) \
 		--bpe-model $(lang_dir)/bpe.model --manifest-dir $(data_dir)/fbank \
@@ -109,7 +152,7 @@ _decode/%:
 	$(decode_params) \
     --decoding-method greedy_search \
     --manifest-dir $(data_dir)/fbank \
-    --use-averaged-model 0 \
+    --use-averaged-model 1 \
     --cuts-name $*  
 decode/test: _decode/test
 .PHONY: train decode/test
@@ -117,7 +160,6 @@ decode/test: _decode/test
 # Learn Kmeans trained initial models
 ##############################################################
 $(data_dir)/kmeans/kmeans.pt: $(data_dir)/fbank/cuts_train_100h.jsonl.gz | $(data_dir)/kmeans
-# 	 -m zipformer_fbank.extract_kmeans_scripts.learn_kmeans
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/learn_kmeans.py \
 		--km-path $(data_dir)/kmeans/kmeans.pt \
     	--n-clusters 500 \
@@ -130,9 +172,26 @@ $(data_dir)/kmeans/kmeans.pt: $(data_dir)/fbank/cuts_train_100h.jsonl.gz | $(dat
     	--avg $(avg) \
     	--max-duration $(max_duration) \
     	--checkpoint-type ASR \
-    	--use-averaged-model 0 \
-    	--bpe-model $(lang_dir)/bpe.model
+    	--use-averaged-model 1 
 learn/kmeans: $(data_dir)/kmeans/kmeans.pt
 .PHONY: learn/kmeans
+##############################################################
+# Extract labels
+##############################################################
+$(data_dir)/tasks/extract.lists: | $(data_dir)/tasks
+	$(python_cmd) ./SSL/local/make_task_list.py --template $(data_dir)/fbank/cuts_pretrain_{}.jsonl.gz --count $(ssl_parts) --output $@
+
+extract/labels: $(data_dir)/kmeans/kmeans.pt $(data_dir)/tasks/extract.lists
+	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/extract_kmeans.py \
+		--model-path $(data_dir)/kmeans/kmeans.pt \
+    	--pretrained-dir $(exp_dir) \
+		$(decode_params) \
+    	--epoch $(epoch) \
+    	--avg $(avg) \
+    	--max-duration $(max_duration) \
+    	--checkpoint-type ASR \
+    	--use-averaged-model 1 \
+		--task-list $(data_dir)/tasks/extract.lists
+.PHONY: extract/labels
 ##############################################################
 .EXPORT_ALL_VARIABLES:
