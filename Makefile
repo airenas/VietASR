@@ -106,7 +106,7 @@ $(corpus_ssl_dir)/.loaded.ssl: | $(corpus_ssl_dir)
 # 	make load/s3/crawl-augmented s3_from=20 s3_to=21 
 	make load/s3/08kHz s3_from=0 s3_to=12
 	make load/s3/16kHz s3_from=0 s3_to=12
- 	make load/s3/liepa3 s3_from=0 s3_to=12
+	make load/s3/liepa3 s3_from=0 s3_to=12
 # 	make load/s3/voxlingua s3_from=0 s3_to=4 
 # a lot of non lithuanian data, so skip
 #	make load/s3/voxpopuli s3_from=0 s3_to=4 
@@ -288,18 +288,18 @@ decode_fine_params?=--bpe-model $(lang_dir)/bpe.model \
 	--feedforward-dim 768,1536,2048,3072,2048,1536 \
 	--encoder-dim 256,512,768,1024,768,512 \
 	--encoder-unmasked-dim 256,256,256,320,256,256 \
-    --final-downsample 1
+	--final-downsample 1
 _decode/finetune/%: 
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/decode.py \
-    --epoch $(epoch) \
-    --avg $(avg) \
-    --use-averaged-model 1 \
-    --exp-dir $(finetune_exp_dir) \
-    --manifest-dir $(data_dir)/fbank \
-    --max-duration $(max_duration) \
-    $(decode_fine_params) \
-    --decoding-method greedy_search \
-    --cuts-name $*  
+		--epoch $(epoch) \
+		--avg $(avg) \
+		--use-averaged-model 1 \
+		--exp-dir $(finetune_exp_dir) \
+		--manifest-dir $(data_dir)/fbank \
+		--max-duration $(max_duration) \
+		$(decode_fine_params) \
+		--decoding-method greedy_search \
+		--cuts-name $*  
 decode/finetune/test: _decode/finetune/test
 .PHONY: train decode/test
 ##############################################################
