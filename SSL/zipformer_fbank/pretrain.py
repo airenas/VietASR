@@ -38,7 +38,6 @@ export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
   --accum-grad 4
 """
 
-
 import argparse
 import copy
 import logging
@@ -48,12 +47,9 @@ from pathlib import Path
 from shutil import copyfile
 from typing import Any, Dict, Optional, Tuple, Union
 
-import lhotse
-import optim
 import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
-from hubert_ce import HubertModel
 from icefall import diagnostics
 from icefall.checkpoint import load_checkpoint, remove_checkpoints
 from icefall.checkpoint import save_checkpoint as save_checkpoint_impl
@@ -74,13 +70,16 @@ from icefall.utils import (
 from lhotse.cut import Cut
 from lhotse.dataset.sampling.base import CutSampler
 from lhotse.utils import fix_random_seed
-from optim import Eden, ScaledAdam
-from ssl_datamodule import VietASRDataModule
 from torch import Tensor
 from torch.cuda.amp import GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
-from utils import get_avg_checkpoint
+from tqdm import tqdm
+
+import optim
+from hubert_ce import HubertModel
+from optim import Eden, ScaledAdam
+from ssl_datamodule import VietASRDataModule
 
 LRSchedulerType = Union[torch.optim.lr_scheduler._LRScheduler, optim.LRScheduler]
 
@@ -89,10 +88,10 @@ def get_adjusted_batch_count(params: AttributeDict) -> float:
     # returns the number of batches we would have used so far if we had used the reference
     # duration.  This is for purposes of set_batch_count().
     return (
-        params.batch_idx_train
-        * params.accum_grad
-        * (params.max_duration * params.world_size)
-        / params.ref_duration
+            params.batch_idx_train
+            * params.accum_grad
+            * (params.max_duration * params.world_size)
+            / params.ref_duration
     )
 
 
@@ -176,7 +175,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         type=str,
         default="192,192,256,256,256,192",
         help="Unmasked dimensions in the encoders, relates to augmentation during training.  "
-        "A single int or comma-separated list.  Must be <= each corresponding encoder_dim.",
+             "A single int or comma-separated list.  Must be <= each corresponding encoder_dim.",
     )
 
     parser.add_argument(
@@ -184,7 +183,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         type=str,
         default="31,31,15,15,15,31",
         help="Sizes of convolutional kernels in convolution modules in each encoder stack: "
-        "a single int or comma-separated list.",
+             "a single int or comma-separated list.",
     )
 
     # hubert parameters
@@ -241,7 +240,7 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         type=str,
         default="16,32,64,-1",
         help="Chunk sizes (at 50Hz frame rate) will be chosen randomly from this list during training. "
-        " Must be just -1 if --causal=False",
+             " Must be just -1 if --causal=False",
     )
 
     parser.add_argument(
@@ -249,8 +248,8 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         type=str,
         default="64,128,256,-1",
         help="Maximum left-contexts for causal training, measured in frames which will "
-        "be converted to a number of chunks.  If splitting into chunks, "
-        "chunk left-context frames will be chosen randomly from this list; else not relevant.",
+             "be converted to a number of chunks.  If splitting into chunks, "
+             "chunk left-context frames will be chosen randomly from this list; else not relevant.",
     )
 
     # masking
@@ -550,7 +549,7 @@ def get_parser():
         type=float,
         default=600,
         help="Reference batch duration for purposes of adjusting batch counts for setting various "
-        "schedules inside the model",
+             "schedules inside the model",
     )
 
     parser.add_argument(
@@ -716,6 +715,8 @@ def get_params() -> AttributeDict:
             # zipformer parameter
             "feature_dim": 80,
             "env_info": get_env_info(),
+            "dev_batches": 0,
+            "train_batches": 0,
         }
     )
 
@@ -732,11 +733,11 @@ def get_model(params: AttributeDict) -> nn.Module:
 
 
 def load_checkpoint_if_available(
-    params: AttributeDict,
-    model: nn.Module,
-    model_avg: nn.Module = None,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-    scheduler: Optional[LRSchedulerType] = None,
+        params: AttributeDict,
+        model: nn.Module,
+        model_avg: nn.Module = None,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        scheduler: Optional[LRSchedulerType] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load checkpoint from file.
 
@@ -766,7 +767,7 @@ def load_checkpoint_if_available(
     if params.start_batch > 0:
         filename = params.exp_dir / f"checkpoint-{params.start_batch}.pt"
     elif params.start_epoch > 1:
-        filename = params.exp_dir / f"epoch-{params.start_epoch-1}.pt"
+        filename = params.exp_dir / f"epoch-{params.start_epoch - 1}.pt"
     else:
         return None
 
@@ -798,14 +799,14 @@ def load_checkpoint_if_available(
 
 
 def save_checkpoint(
-    params: AttributeDict,
-    model: Union[nn.Module, DDP],
-    model_avg: Optional[nn.Module] = None,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-    scheduler: Optional[LRSchedulerType] = None,
-    sampler: Optional[CutSampler] = None,
-    scaler: Optional[GradScaler] = None,
-    rank: int = 0,
+        params: AttributeDict,
+        model: Union[nn.Module, DDP],
+        model_avg: Optional[nn.Module] = None,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        scheduler: Optional[LRSchedulerType] = None,
+        sampler: Optional[CutSampler] = None,
+        scaler: Optional[GradScaler] = None,
+        rank: int = 0,
 ) -> None:
     """Save model, optimizer, scheduler and training stats to file.
 
@@ -848,10 +849,10 @@ def save_checkpoint(
 
 
 def compute_loss(
-    params: AttributeDict,
-    model: Union[nn.Module, DDP],
-    batch: dict,
-    is_training: bool,
+        params: AttributeDict,
+        model: Union[nn.Module, DDP],
+        batch: dict,
+        is_training: bool,
 ) -> Tuple[Tensor, MetricsTracker]:
     """
     Compute loss given the model and its inputs.
@@ -921,17 +922,22 @@ def compute_loss(
 
 
 def compute_validation_loss(
-    params: AttributeDict,
-    model: Union[nn.Module, DDP],
-    valid_dl: torch.utils.data.DataLoader,
-    world_size: int = 1,
+        params: AttributeDict,
+        model: Union[nn.Module, DDP],
+        valid_dl: torch.utils.data.DataLoader,
+        world_size: int = 1,
 ) -> MetricsTracker:
     """Run the validation process."""
     model.eval()
 
     tot_loss = MetricsTracker()
 
-    for batch_idx, batch in enumerate(valid_dl):
+    total_batches = params.dev_batches
+    if total_batches == 0:
+        total_batches = None
+    batches = 0
+    for batch_idx, batch in enumerate(tqdm(valid_dl, desc="Validation", total=total_batches)):
+        batches = batch_idx + 1
         loss, loss_info = compute_loss(
             params=params,
             model=model,
@@ -940,6 +946,8 @@ def compute_validation_loss(
         )
         assert loss.requires_grad is False
         tot_loss = tot_loss + loss_info
+
+    params.dev_batches =  batches
 
     if world_size > 1:
         tot_loss.reduce(loss.device)
@@ -953,17 +961,17 @@ def compute_validation_loss(
 
 
 def train_one_epoch(
-    params: AttributeDict,
-    model: Union[nn.Module, DDP],
-    optimizer: torch.optim.Optimizer,
-    scheduler: LRSchedulerType,
-    train_dl: torch.utils.data.DataLoader,
-    valid_dl: torch.utils.data.DataLoader,
-    scaler: GradScaler,
-    model_avg: Optional[nn.Module] = None,
-    tb_writer: Optional[SummaryWriter] = None,
-    world_size: int = 1,
-    rank: int = 0,
+        params: AttributeDict,
+        model: Union[nn.Module, DDP],
+        optimizer: torch.optim.Optimizer,
+        scheduler: LRSchedulerType,
+        train_dl: torch.utils.data.DataLoader,
+        valid_dl: torch.utils.data.DataLoader,
+        scaler: GradScaler,
+        model_avg: Optional[nn.Module] = None,
+        tb_writer: Optional[SummaryWriter] = None,
+        world_size: int = 1,
+        rank: int = 0,
 ) -> None:
     """Train the model for one epoch.
 
@@ -1015,7 +1023,12 @@ def train_one_epoch(
             rank=0,
         )
 
-    for sub_batch_idx, batch in enumerate(train_dl):
+    total_batches = params.train_batches
+    if total_batches == 0:
+        total_batches = None
+    batches = 0
+    for sub_batch_idx, batch in enumerate(tqdm(train_dl, desc=f"Epoch {params.cur_epoch}", total=total_batches)):
+        batches = sub_batch_idx + 1
         params.sub_batch_idx_train += 1
         batch_idx = sub_batch_idx // params.accum_grad
 
@@ -1025,7 +1038,7 @@ def train_one_epoch(
         batch_size = batch["kmeans"].shape[0]
 
         try:
-            with torch.cuda.amp.autocast(enabled=params.use_fp16):
+            with torch.amp.autocast('cuda', enabled=params.use_fp16):
                 loss, loss_info = compute_loss(
                     params=params,
                     model=model,
@@ -1058,9 +1071,9 @@ def train_one_epoch(
             return
 
         if (
-            rank == 0
-            and params.batch_idx_train > 0
-            and params.batch_idx_train % params.average_period == 0
+                rank == 0
+                and params.batch_idx_train > 0
+                and params.batch_idx_train % params.average_period == 0
         ):
             update_averaged_model(
                 params=params,
@@ -1069,8 +1082,8 @@ def train_one_epoch(
             )
 
         if (
-            params.batch_idx_train > 0
-            and params.batch_idx_train % params.save_every_n == 0
+                params.batch_idx_train > 0
+                and params.batch_idx_train % params.save_every_n == 0
         ):
             save_checkpoint_with_global_batch_idx(
                 out_dir=params.exp_dir,
@@ -1146,13 +1159,14 @@ def train_one_epoch(
             model.train()
             logging.info(f"Epoch {params.cur_epoch}, validation: {valid_info}")
             logging.info(
-                f"Maximum memory allocated so far is {torch.cuda.max_memory_allocated()//1000000}MB"
+                f"Maximum memory allocated so far is {torch.cuda.max_memory_allocated() // 1000000}MB"
             )
             if tb_writer is not None:
                 valid_info.write_summary(
                     tb_writer, "train/valid_", params.batch_idx_train
                 )
 
+    params.train_batches = batches
     if batch_idx % params.accum_grad != params.accum_grad - 1:
         optimizer.zero_grad()
     loss_value = tot_loss["loss"] / tot_loss["frames"]
@@ -1236,9 +1250,9 @@ def run(rank, world_size, args):
         optimizer.load_state_dict(checkpoints["optimizer"])
 
     if (
-        checkpoints
-        and "scheduler" in checkpoints
-        and checkpoints["scheduler"] is not None
+            checkpoints
+            and "scheduler" in checkpoints
+            and checkpoints["scheduler"] is not None
     ):
         logging.info("Loading scheduler state dict")
         scheduler.load_state_dict(checkpoints["scheduler"])
@@ -1255,7 +1269,7 @@ def run(rank, world_size, args):
     pretraining = VietASRDataModule(args)
 
     train_cuts = pretraining.train_cuts_vi_ssl(
-        prefix=params.manifest_prefix, suffix="_" + params.label_type
+        prefix=params.manifest_prefix + "train_l", suffix="_" + params.label_type
     )
 
     def remove_short_and_long_utt_and_special_channel(c: Cut):
@@ -1268,15 +1282,14 @@ def run(rank, world_size, args):
         # an utterance duration distribution for your dataset to select
         # the threshold
         if c.duration < params.min_keep_size / params.sample_rate or c.duration > min(
-            params.max_keep_size / params.sample_rate, 30
+                params.max_keep_size / params.sample_rate, 90
         ):
             # logging.warning(
             #     f"Exclude cut with ID {c.id} from training. Duration: {c.duration}"
             # )
             return False
-        if c.recording.sources[0].source.find("vneconomymedia5190") >= 0:
-            return False
 
+        # logging.info(f"Keep cut with ID {c.id} for training. Duration: {c.duration}")
         return True
 
     train_cuts = train_cuts.filter(remove_short_and_long_utt_and_special_channel)
@@ -1297,7 +1310,7 @@ def run(rank, world_size, args):
         sampler_state_dict=sampler_state_dict,
     )
 
-    valid_cuts = pretraining.dev_cuts_vi_ssl(suffix="_" + args.label_type)
+    valid_cuts = pretraining.dev_cuts_vi_ssl(prefix=params.manifest_prefix + "dev_l", suffix="_" + args.label_type)
 
     valid_cuts = valid_cuts.filter(remove_short_and_long_utt_and_special_channel)
 
@@ -1369,8 +1382,8 @@ def run(rank, world_size, args):
 
 
 def display_and_save_batch(
-    batch: dict,
-    params: AttributeDict,
+        batch: dict,
+        params: AttributeDict,
 ) -> None:
     """Display the batch statistics and save the batch into disk.
 
@@ -1394,10 +1407,10 @@ def display_and_save_batch(
 
 
 def scan_pessimistic_batches_for_oom(
-    model: Union[nn.Module, DDP],
-    train_dl: torch.utils.data.DataLoader,
-    optimizer: torch.optim.Optimizer,
-    params: AttributeDict,
+        model: Union[nn.Module, DDP],
+        train_dl: torch.utils.data.DataLoader,
+        optimizer: torch.optim.Optimizer,
+        params: AttributeDict,
 ):
     from lhotse.dataset import find_pessimistic_batches
 
@@ -1429,7 +1442,7 @@ def scan_pessimistic_batches_for_oom(
             display_and_save_batch(batch, params=params)
             raise
         logging.info(
-            f"Maximum memory allocated so far is {torch.cuda.max_memory_allocated()//1000000}MB"
+            f"Maximum memory allocated so far is {torch.cuda.max_memory_allocated() // 1000000}MB"
         )
 
 

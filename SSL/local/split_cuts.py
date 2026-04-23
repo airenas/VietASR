@@ -52,7 +52,7 @@ def main():
     def save_subset():
         nonlocal selected, total, num
         subset = CutSet.from_cuts(selected)
-        file_name = args.output_dir / f"cuts_pretrain_{num:03d}.jsonl.gz"
+        file_name = args.output_dir / f"cuts_pretrain_train_{num:03d}.jsonl.gz"
         logging.info(f"Saving subset: {len(subset)} cuts, {total:.2f} secs to {file_name}")
         subset.to_file(file_name)        
         selected = []

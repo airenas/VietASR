@@ -255,7 +255,7 @@ def main(args):
         finetune_datamoddule = FinetuneAsrDataModule(args)
         test_dl = finetune_datamoddule.test_dataloaders(cuts)
 
-        for i, batch in enumerate(test_dl):
+        for i, batch in enumerate(tqdm.tqdm(test_dl, desc="Extracting kmeans label", unit="batch")):
             sub_routine(batch, feature_model, model, km_dict, device)
 
         def add_label(km_dict):

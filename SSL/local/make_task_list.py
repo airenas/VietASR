@@ -7,10 +7,17 @@ def get_args():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--template",
+        "--template-in",
         type=str,
         required=True,
-        help="Template to use",
+        help="Template to use for input files",
+    )
+
+    parser.add_argument(
+        "--template-out",
+        type=str,
+        required=True,
+        help="Template to use for output files",
     )
 
     parser.add_argument(
@@ -25,19 +32,40 @@ def get_args():
         default=10,
         help="Tasks count",
     )
+    parser.add_argument(
+        "--gpus",
+        type=int,
+        default=1,
+        help="Gpu count",
+    )
     return parser.parse_args()
 
 
 def main():
     args = get_args()
     logging.info(vars(args))
-    with open(args.output, "w") as f:
-        for i in range(args.count):
-            old = args.template.replace("{}", f"{i:03d}")
-            new = args.template.replace("{}", f"l_{i:03d}")
-            f.write(f"{old} {new}\n")
+    res = []
+    for i in range(args.count):
+        old = args.template_in.replace("{}", f"{i:03d}")
+        new = args.template_out.replace("{}", f"{i:03d}")
+        res.append(f"{old} {new}")
 
-    logging.info(f"Saved {args.output}")
+    in_file = args.count / args.gpus
+
+    start = 0
+    end = in_file
+    for i in range(args.gpus):
+        if i == args.gpus - 1:
+            end = len(res)
+        else:
+            end = int((i + 1) * in_file)
+        logging.info(f"GPU {i}: {start} - {end}")
+        with open(f"{args.output}{i}", "w") as f:
+            for r in res[start: end]:
+                f.write(f"{r}\n")
+        start = end
+
+    logging.info(f"Saved {args.output}.* files")
 
 
 if __name__ == "__main__":

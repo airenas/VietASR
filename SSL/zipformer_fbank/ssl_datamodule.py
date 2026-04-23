@@ -20,19 +20,19 @@ import argparse
 import logging
 import os
 import random
-import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import lhotse
 import torch
-from dataset import HubertDataset
 from icefall.utils import str2bool
-from lhotse import CutSet, load_manifest_lazy
+from lhotse import CutSet
 from lhotse.dataset import DynamicBucketingSampler, SimpleCutSampler
 from lhotse.utils import fix_random_seed
 from torch.utils.data import DataLoader
+
+from dataset import HubertDataset
 
 
 class _SeedWorkers:
@@ -66,8 +66,8 @@ class VietASRDataModule:
         group = parser.add_argument_group(
             title="SSL data related options",
             description="These options are used for the preparation of "
-            "PyTorch DataLoaders from Lhotse CutSet's -- they control the "
-            "effective batch sizes, sampling strategies.",
+                        "PyTorch DataLoaders from Lhotse CutSet's -- they control the "
+                        "effective batch sizes, sampling strategies.",
         )
 
         group.add_argument(
@@ -81,28 +81,28 @@ class VietASRDataModule:
             type=float,
             default=200.0,
             help="Maximum pooled recordings duration (seconds) in a "
-            "single batch. You can reduce it if it causes CUDA OOM.",
+                 "single batch. You can reduce it if it causes CUDA OOM.",
         )
         group.add_argument(
             "--bucketing-sampler",
             type=str2bool,
             default=True,
             help="When enabled, the batches will come from buckets of "
-            "similar duration (saves padding frames).",
+                 "similar duration (saves padding frames).",
         )
         group.add_argument(
             "--num-buckets",
             type=int,
             default=30,
             help="The number of buckets for the DynamicBucketingSampler"
-            "(you might want to increase it for larger datasets).",
+                 "(you might want to increase it for larger datasets).",
         )
         group.add_argument(
             "--shuffle",
             type=str2bool,
             default=True,
             help="When enabled (=default), the examples will be "
-            "shuffled for each epoch.",
+                 "shuffled for each epoch.",
         )
         group.add_argument(
             "--drop-last",
@@ -115,7 +115,7 @@ class VietASRDataModule:
             type=int,
             default=2,
             help="The number of training dataloader workers that "
-            "collect the batches.",
+                 "collect the batches.",
         )
         group.add_argument(
             "--do-normalize",
@@ -131,15 +131,15 @@ class VietASRDataModule:
         )
 
     def train_dataloaders(
-        self,
-        cuts_train: CutSet,
-        max_sample_size: Optional[int] = None,
-        sample_rate: float = 16000,
-        label_rate: float = 50,
-        random_crop: bool = True,
-        pad_audio: bool = False,
-        num_classes: list = [504],
-        sampler_state_dict: Optional[Dict[str, Any]] = None,
+            self,
+            cuts_train: CutSet,
+            max_sample_size: Optional[int] = None,
+            sample_rate: float = 16000,
+            label_rate: float = 50,
+            random_crop: bool = True,
+            pad_audio: bool = False,
+            num_classes: list = [504],
+            sampler_state_dict: Optional[Dict[str, Any]] = None,
     ) -> DataLoader:
         """
         Args:
@@ -197,14 +197,14 @@ class VietASRDataModule:
         return train_dl
 
     def valid_dataloaders(
-        self,
-        cuts_valid: CutSet,
-        max_sample_size: Optional[int] = None,
-        sample_rate: float = 16000,
-        label_rate: float = 50,
-        random_crop: bool = True,
-        pad_audio: bool = False,
-        num_classes: list = [504],
+            self,
+            cuts_valid: CutSet,
+            max_sample_size: Optional[int] = None,
+            sample_rate: float = 16000,
+            label_rate: float = 50,
+            random_crop: bool = True,
+            pad_audio: bool = False,
+            num_classes: list = [504],
     ) -> DataLoader:
         logging.info("About to create dev dataset")
         validate = HubertDataset(
@@ -232,13 +232,13 @@ class VietASRDataModule:
         return valid_dl
 
     def test_dataloaders(
-        self,
-        cuts: CutSet,
-        sample_rate: float = 16000,
-        label_rate: float = 50,
-        random_crop: bool = True,
-        pad_audio: bool = False,
-        num_classes: list = [504],
+            self,
+            cuts: CutSet,
+            sample_rate: float = 16000,
+            label_rate: float = 50,
+            random_crop: bool = True,
+            pad_audio: bool = False,
+            num_classes: list = [504],
     ) -> DataLoader:
         logging.debug("About to create test dataset")
         test = HubertDataset(
@@ -263,62 +263,34 @@ class VietASRDataModule:
         return test_dl
 
     @lru_cache()
-    def dev_cuts_vi_ssl(self, suffix) -> CutSet:
-        logging.info("About to get dev cuts")
+    def dev_cuts_vi_ssl(self, prefix, suffix) -> CutSet:
+        logging.info(f"About to get dev cuts, prefix: {prefix}, suffix: {suffix}")
+        files = os.listdir(self.args.manifest_dir)
+        logging.info(f"Found {len(files)} files in {self.args.manifest_dir}")
         cut_lis = []
-        pool = "ssl_dev"
-        pool_name = "dev"
-        split_name = f"{pool_name}_split"
-        split_path = os.path.join(self.args.manifest_dir, pool, split_name)
-        split_list = os.listdir(split_path)
-        pattern = re.compile(
-            "vietASR-ssl_cuts_" + pool_name + suffix + r".([0-9]+).jsonl.gz"
-        )
-        split_list = [
-            f"{self.args.manifest_dir}/{pool}/{split_name}/{item}"
-            for item in split_list
-            if pattern.match(item)
-        ]
-        cut_lis.extend(split_list)
-        # cut_lis = sorted(cut_lis)[1:]
+        for file in files:
+            if file.startswith(prefix) and file.endswith(suffix + ".jsonl.gz"):
+                cut_lis.append(f"{self.args.manifest_dir}/{file}")
         cut_lis = sorted(cut_lis)
-        # sorted_filenames = [f[1] for f in idx_filenames]
+        logging.info(f"Use dev {cut_lis}")
+        random.shuffle(cut_lis)
         logging.info(f"Loading {len(cut_lis)} splits in lazy mode")
-
-        cuts_train = lhotse.combine(lhotse.load_manifest_lazy(p) for p in cut_lis)
-        return cuts_train
+        res = lhotse.combine(lhotse.load_manifest_lazy(p) for p in cut_lis)
+        return res
 
     @lru_cache()
     def train_cuts_vi_ssl(self, prefix, suffix) -> CutSet:
         random.seed(142)
-        logging.info("About to get train cuts")
-        pool_lis = os.listdir(self.args.manifest_dir)
-        pool_lis = [
-            item
-            for item in pool_lis
-            if os.path.isdir(os.path.join(self.args.manifest_dir, item))
-            and item.startswith(prefix)
-        ]
+        logging.info(f"About to get train cuts, prefix: {prefix}, suffix: {suffix}")
+        files = os.listdir(self.args.manifest_dir)
+        logging.info(f"Found {len(files)} files in {self.args.manifest_dir}")
         cut_lis = []
-        for pool in pool_lis:
-            pool_name = pool[4:]
-            split_name = f"{pool_name}_split"
-            split_path = os.path.join(self.args.manifest_dir, pool, split_name)
-            split_list = os.listdir(split_path)
-            pattern = re.compile(
-                "vietASR-ssl_cuts_" + pool_name + suffix + r".([0-9]+).jsonl.gz"
-            )
-            split_list = [
-                f"{self.args.manifest_dir}/{pool}/{split_name}/{item}"
-                for item in split_list
-                if pattern.match(item)
-            ]
-            cut_lis.extend(split_list)
-        # cut_lis = sorted(cut_lis)[1:]
+        for file in files:
+            if file.startswith(prefix) and file.endswith(suffix + ".jsonl.gz"):
+                cut_lis.append(f"{self.args.manifest_dir}/{file}")
+        logging.info(f"Use train {cut_lis}")
         cut_lis = sorted(cut_lis)
         random.shuffle(cut_lis)
-        # sorted_filenames = [f[1] for f in idx_filenames]
         logging.info(f"Loading {len(cut_lis)} splits in lazy mode")
-
         cuts_train = lhotse.combine(lhotse.load_manifest_lazy(p) for p in cut_lis)
         return cuts_train

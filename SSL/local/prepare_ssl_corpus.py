@@ -93,6 +93,9 @@ def main():
             if result is None:
                 continue
             recording, segment = result
+            if recording.duration <= 0.2:
+                logging.warning(f"Recording {recording.id} is too short ({recording.duration:.2f} secs) - skipping")
+                continue
             recordings.append(recording)
             supervisions.append(segment)
 

@@ -4,6 +4,7 @@ cfg?=Makefile.options
 LOGLEVEL?=INFO
 
 exp_dir?=data/exp/v01
+pretrain_exp_dir?=data/exp/pretrain_v01
 
 icefall_dir?=./../icefall
 
@@ -99,13 +100,13 @@ load/s3/%: | $(corpus_ssl_dir)
 
 # one tar is 5 hours of audio, so 5 tars is 25 hours, which is a good chunk to process at once
 $(corpus_ssl_dir)/.loaded.ssl: | $(corpus_ssl_dir)
-	make load/s3/crawl s3_from=0 s3_to=4 
+	make load/s3/crawl s3_from=0 s3_to=8
 # crawl-augmented 15h each
-	make load/s3/crawl-augmented s3_from=20 s3_to=21 
-	make load/s3/08kHz s3_from=0 s3_to=4 
-	make load/s3/16kHz s3_from=0 s3_to=4 
-	make load/s3/liepa3 s3_from=0 s3_to=4 
-	make load/s3/voxlingua s3_from=0 s3_to=4 
+# 	make load/s3/crawl-augmented s3_from=20 s3_to=21 
+	make load/s3/08kHz s3_from=0 s3_to=8
+	make load/s3/16kHz s3_from=0 s3_to=8
+# 	make load/s3/liepa3 s3_from=0 s3_to=4 
+# 	make load/s3/voxlingua s3_from=0 s3_to=4 
 # a lot of non lithuanian data, so skip
 #	make load/s3/voxpopuli s3_from=0 s3_to=4 
 	
@@ -115,16 +116,20 @@ load/ssl: $(corpus_ssl_dir)/.loaded.ssl
 $(data_dir)/manifests/cuts_pretrain.jsonl.gz: $(corpus_ssl_dir)/.loaded.ssl | $(data_dir)/manifests 
 	$(python_cmd) ./SSL/local/prepare_ssl_corpus.py --corpus-dir $(corpus_ssl_dir) --output-file $@ --workers $(workers)
 
-shards := $(shell seq -f "%03g" 0 $$(($(ssl_parts)-1)))
-ssl_cuts_files := $(foreach r,$(shards),$(data_dir)/manifests/cuts_pretrain_$(r).jsonl.gz)	
-ssl_feat_files := $(foreach r,$(shards),$(data_dir)/fbank/cuts_pretrain_$(r).jsonl.gz)	
+$(data_dir)/manifests/cuts_pretrain_dev.jsonl.gz $(data_dir)/manifests/cuts_pretrain_train.jsonl.gz: $(data_dir)/manifests/cuts_pretrain.jsonl.gz | $(data_dir)/manifests 
+	$(python_cmd) ./SSL/local/split.py --input $< --out-dev $(data_dir)/manifests/cuts_pretrain_dev.jsonl.gz --out-train $(data_dir)/manifests/cuts_pretrain_train.jsonl.gz \
+		--secs-for-dev 36000
 
-$(ssl_cuts_files): $(data_dir)/manifests/cuts_pretrain.jsonl.gz
+shards := $(shell seq -f "%03g" 0 $$(($(ssl_parts)-1)))
+ssl_cuts_files := $(foreach r,$(shards),$(data_dir)/manifests/cuts_pretrain_train_$(r).jsonl.gz)	
+ssl_feat_files := $(foreach r,$(shards),$(data_dir)/fbank/cuts_pretrain_train_$(r).jsonl.gz)	
+
+$(ssl_cuts_files): $(data_dir)/manifests/cuts_pretrain_train.jsonl.gz
 	$(python_cmd) ./SSL/local/split_cuts.py --input $< --output-dir $(data_dir)/manifests --split-into $(ssl_parts)
 $(data_dir)/fbank/%: $(data_dir)/manifests/% | $(data_dir)/fbank
 	$(python_ssl_cmd) ./SSL/local/compute_fbank.py --input $^ --output $@ 
 
-prepare/ssl: $(ssl_feat_files)
+prepare/ssl: $(ssl_feat_files) $(data_dir)/fbank/cuts_pretrain_dev.jsonl.gz
 .PHONY: prepare/ssl
 ##############################################################
 # Train Initial LIEPA3 model                                 #
@@ -183,11 +188,18 @@ learn/kmeans: $(data_dir)/kmeans/kmeans.pt
 ##############################################################
 # Extract labels
 ##############################################################
-$(data_dir)/tasks/extract.lists: | $(data_dir)/tasks
-	$(python_cmd) ./SSL/local/make_task_list.py --template $(data_dir)/fbank/cuts_pretrain_{}.jsonl.gz --count $(ssl_parts) --output $@
+gpu_nums := $(shell seq 0 $$(($(gpus)-1)))
+extract_files := $(foreach r,$(gpu_nums),$(data_dir)/tasks/extract.lists.$(r))	
+extract_done_files := $(foreach r,$(gpu_nums),$(data_dir)/tasks/.extract.done.$(r))	
 
-extract/labels: $(data_dir)/kmeans/kmeans.pt $(data_dir)/tasks/extract.lists
-	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/extract_kmeans.py \
+$(data_dir)/tasks/.extract.split: $(ssl_feat_files) | $(data_dir)/tasks
+	$(python_cmd) ./SSL/local/make_task_list.py --template-in $(data_dir)/fbank/cuts_pretrain_train_{}.jsonl.gz \
+		--template-out $(data_dir)/fbank/cuts_pretrain_train_l_{}_kmeans.jsonl.gz --count $(ssl_parts) --output $(data_dir)/tasks/extract.lists. --gpus $(gpus)
+	echo "$(data_dir)/fbank/cuts_pretrain_dev.jsonl.gz $(data_dir)/fbank/cuts_pretrain_dev_l_kmeans.jsonl.gz" >> $(data_dir)/tasks/extract.lists.0	
+	touch $@
+
+$(data_dir)/tasks/.extract.done.%: $(data_dir)/tasks/.extract.split $(data_dir)/kmeans/kmeans.pt
+	CUDA_VISIBLE_DEVICES=$* $(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/extract_kmeans.py \
 		--model-path $(data_dir)/kmeans/kmeans.pt \
     	--pretrained-dir $(exp_dir) \
 		$(decode_params) \
@@ -196,7 +208,43 @@ extract/labels: $(data_dir)/kmeans/kmeans.pt $(data_dir)/tasks/extract.lists
     	--max-duration $(max_duration) \
     	--checkpoint-type ASR \
     	--use-averaged-model 1 \
-		--task-list $(data_dir)/tasks/extract.lists
+		--task-list $(data_dir)/tasks/extract.lists.$*
+	touch $@		
+extract/labels: $(extract_done_files)
 .PHONY: extract/labels
+##############################################################
+# PRETRAIN
+##############################################################
+pretrain_params?=--use-fp16 1 --max-duration $(max_duration) \
+	--num-encoder-layers 2,2,4,5,4,2 \
+    --feedforward-dim 768,1536,2048,3072,2048,1536 \
+    --encoder-dim 256,512,768,1024,768,512 \
+    --encoder-unmasked-dim 256,256,256,320,256,256 \
+    --base-lr 0.045
+
+pretrain:
+	$(python_ssl_cmd) ./SSL/zipformer_fbank/pretrain.py \
+		--world-size $(gpus) \
+		--num-epochs 20 \
+		--start-epoch $(start_epoch)  \
+		--use-fp16 1 \
+		--label-type kmeans \
+		--label-rate 50 \
+		--sample-rate 100 \
+		--exp-dir $(pretrain_exp_dir) \
+		--train-cut large \
+		--accum-grad 1 \
+		--min-keep-size 200 \
+		--mask-before-cnn 1 \
+		--max-sample-size 1562 \
+		--mask-prob 0.80 \
+		--dropout-input 0.1 \
+		--dropout-features 0.1 \
+		$(pretrain_params) \
+		--save-every-n 15000 \
+		--master-port 12356 \
+		--manifest-dir $(data_dir)/fbank \
+		--manifest-prefix cuts_pretrain_
+.PHONY: pretrain
 ##############################################################
 .EXPORT_ALL_VARIABLES:

@@ -24,7 +24,7 @@ import k2
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.cuda.amp import custom_bwd, custom_fwd
+from torch.amp import custom_bwd, custom_fwd
 
 
 def logaddexp_onnx(x: Tensor, y: Tensor) -> Tensor:
