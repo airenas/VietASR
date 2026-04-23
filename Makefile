@@ -5,6 +5,7 @@ LOGLEVEL?=INFO
 
 exp_dir?=data/exp/v01
 pretrain_exp_dir?=data/exp/pretrain_v01
+finetune_exp_dir?=data/exp/finetune_v01
 
 icefall_dir?=./../icefall
 
@@ -100,12 +101,12 @@ load/s3/%: | $(corpus_ssl_dir)
 
 # one tar is 5 hours of audio, so 5 tars is 25 hours, which is a good chunk to process at once
 $(corpus_ssl_dir)/.loaded.ssl: | $(corpus_ssl_dir)
-	make load/s3/crawl s3_from=0 s3_to=8
+	make load/s3/crawl s3_from=0 s3_to=12
 # crawl-augmented 15h each
 # 	make load/s3/crawl-augmented s3_from=20 s3_to=21 
-	make load/s3/08kHz s3_from=0 s3_to=8
-	make load/s3/16kHz s3_from=0 s3_to=8
-# 	make load/s3/liepa3 s3_from=0 s3_to=4 
+	make load/s3/08kHz s3_from=0 s3_to=12
+	make load/s3/16kHz s3_from=0 s3_to=12
+ 	make load/s3/liepa3 s3_from=0 s3_to=12
 # 	make load/s3/voxlingua s3_from=0 s3_to=4 
 # a lot of non lithuanian data, so skip
 #	make load/s3/voxpopuli s3_from=0 s3_to=4 
@@ -246,5 +247,60 @@ pretrain:
 		--manifest-dir $(data_dir)/fbank \
 		--manifest-prefix cuts_pretrain_
 .PHONY: pretrain
+##############################################################
+# FINETUNE
+##############################################################
+finetune_params?=--use-fp16 1 --max-duration $(max_duration) \
+	--num-encoder-layers 2,2,4,5,4,2 \
+	--feedforward-dim 768,1536,2048,3072,2048,1536 \
+	--encoder-dim 256,512,768,1024,768,512 \
+	--encoder-unmasked-dim 256,256,256,320,256,256 \
+	--base-lr 0.002 \
+	--enable-musan 0 --enable-spec-aug 0 \
+	--mask-before-cnn 1 \
+	--mask-prob 0.65 \
+	--mask-channel-prob 0.5 \
+	--mask-channel-length 20 \
+	--accum-grad 1 \
+	--phase-ratio "(0.1, 0.4, 0.5)" \
+	--max-lr-update 80000
+    
+finetune: 
+	$(python_ssl_cmd) ./SSL/zipformer_fbank/finetune.py \
+		--world-size $(gpus) \
+		--num-epochs $(epoch) \
+		--start-epoch $(start_epoch) \
+		--sample-rate 100 \
+		--manifest-dir $(data_dir)/fbank \
+		--bpe-model $(lang_dir)/bpe.model \
+		--exp-dir $(finetune_exp_dir) \
+		--pretrained-checkpoint-path $(pretrain_exp_dir)/epoch-20.pt \
+		--final-downsample 1 \
+		--causal 0 \
+		--seed 1556 \
+		$(finetune_params) 
+.PHONY: finetune
+##############################################################
+# DECODE FINETUNE
+##############################################################
+decode_fine_params?=--bpe-model $(lang_dir)/bpe.model \
+	--num-encoder-layers 2,2,4,5,4,2 \
+	--feedforward-dim 768,1536,2048,3072,2048,1536 \
+	--encoder-dim 256,512,768,1024,768,512 \
+	--encoder-unmasked-dim 256,256,256,320,256,256 \
+    --final-downsample 1
+_decode/finetune/%: 
+	$(python_ssl_cmd) ./SSL/zipformer_fbank/decode.py \
+    --epoch $(epoch) \
+    --avg $(avg) \
+    --use-averaged-model 1 \
+    --exp-dir $(finetune_exp_dir) \
+    --manifest-dir $(data_dir)/fbank \
+    --max-duration $(max_duration) \
+    $(decode_fine_params) \
+    --decoding-method greedy_search \
+    --cuts-name $*  
+decode/finetune/test: _decode/finetune/test
+.PHONY: train decode/test
 ##############################################################
 .EXPORT_ALL_VARIABLES:
