@@ -19,16 +19,11 @@
 import argparse
 import inspect
 import logging
-import os
-import random
-import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import lhotse
 import torch
-from dataset import PseudoRecognitionDataset
 from icefall.utils import str2bool
 from lhotse import CutSet, Fbank, FbankConfig, load_manifest, load_manifest_lazy
 from lhotse.dataset import (  # noqa F401 for PrecomputedFeatures
@@ -46,6 +41,8 @@ from lhotse.dataset.input_strategies import (  # noqa F401 For AudioSamples
 )
 from lhotse.utils import fix_random_seed
 from torch.utils.data import DataLoader
+
+from dataset import PseudoRecognitionDataset
 
 
 class _SeedWorkers:
@@ -82,9 +79,9 @@ class AsrDataModule:
         group = parser.add_argument_group(
             title="ASR data related options",
             description="These options are used for the preparation of "
-            "PyTorch DataLoaders from Lhotse CutSet's -- they control the "
-            "effective batch sizes, sampling strategies, applied data "
-            "augmentations, etc.",
+                        "PyTorch DataLoaders from Lhotse CutSet's -- they control the "
+                        "effective batch sizes, sampling strategies, applied data "
+                        "augmentations, etc.",
         )
 
         group.add_argument(
@@ -98,58 +95,58 @@ class AsrDataModule:
             type=int,
             default=200.0,
             help="Maximum pooled recordings duration (seconds) in a "
-            "single batch. You can reduce it if it causes CUDA OOM.",
+                 "single batch. You can reduce it if it causes CUDA OOM.",
         )
         group.add_argument(
             "--bucketing-sampler",
             type=str2bool,
             default=True,
             help="When enabled, the batches will come from buckets of "
-            "similar duration (saves padding frames).",
+                 "similar duration (saves padding frames).",
         )
         group.add_argument(
             "--num-buckets",
             type=int,
             default=30,
             help="The number of buckets for the DynamicBucketingSampler"
-            "(you might want to increase it for larger datasets).",
+                 "(you might want to increase it for larger datasets).",
         )
         group.add_argument(
             "--concatenate-cuts",
             type=str2bool,
             default=False,
             help="When enabled, utterances (cuts) will be concatenated "
-            "to minimize the amount of padding.",
+                 "to minimize the amount of padding.",
         )
         group.add_argument(
             "--duration-factor",
             type=float,
             default=1.0,
             help="Determines the maximum duration of a concatenated cut "
-            "relative to the duration of the longest cut in a batch.",
+                 "relative to the duration of the longest cut in a batch.",
         )
         group.add_argument(
             "--gap",
             type=float,
             default=1.0,
             help="The amount of padding (in seconds) inserted between "
-            "concatenated cuts. This padding is filled with noise when "
-            "noise augmentation is used.",
+                 "concatenated cuts. This padding is filled with noise when "
+                 "noise augmentation is used.",
         )
         group.add_argument(
             "--on-the-fly-feats",
             type=str2bool,
             default=False,
             help="When enabled, use on-the-fly cut mixing and feature "
-            "extraction. Will drop existing precomputed feature manifests "
-            "if available.",
+                 "extraction. Will drop existing precomputed feature manifests "
+                 "if available.",
         )
         group.add_argument(
             "--shuffle",
             type=str2bool,
             default=True,
             help="When enabled (=default), the examples will be "
-            "shuffled for each epoch.",
+                 "shuffled for each epoch.",
         )
         group.add_argument(
             "--drop-last",
@@ -162,8 +159,8 @@ class AsrDataModule:
             type=str2bool,
             default=True,
             help="When enabled, each batch will have the "
-            "field: batch['supervisions']['cut'] with the cuts that "
-            "were used to construct it.",
+                 "field: batch['supervisions']['cut'] with the cuts that "
+                 "were used to construct it.",
         )
 
         group.add_argument(
@@ -171,7 +168,7 @@ class AsrDataModule:
             type=int,
             default=2,
             help="The number of training dataloader workers that "
-            "collect the batches.",
+                 "collect the batches.",
         )
 
         group.add_argument(
@@ -186,9 +183,9 @@ class AsrDataModule:
             type=int,
             default=80,
             help="Used only when --enable-spec-aug is True. "
-            "It specifies the factor for time warping in SpecAugment. "
-            "Larger values mean more warping. "
-            "A value less than 1 means to disable time warp.",
+                 "It specifies the factor for time warping in SpecAugment. "
+                 "Larger values mean more warping. "
+                 "A value less than 1 means to disable time warp.",
         )
 
         group.add_argument(
@@ -196,7 +193,7 @@ class AsrDataModule:
             type=str2bool,
             default=True,
             help="When enabled, select noise from MUSAN and mix it"
-            "with training dataset. ",
+                 "with training dataset. ",
         )
 
         group.add_argument(
@@ -207,10 +204,10 @@ class AsrDataModule:
         )
 
     def train_dataloaders(
-        self,
-        cuts_train: CutSet,
-        sampler_state_dict: Optional[Dict[str, Any]] = None,
-        use_kmeans: bool = False,
+            self,
+            cuts_train: CutSet,
+            sampler_state_dict: Optional[Dict[str, Any]] = None,
+            use_kmeans: bool = False,
     ) -> DataLoader:
         """
         Args:
@@ -239,10 +236,10 @@ class AsrDataModule:
             # so that if we e.g. mix noise in, it will fill the gaps between
             # different utterances.
             transforms = [
-                CutConcatenate(
-                    duration_factor=self.args.duration_factor, gap=self.args.gap
-                )
-            ] + transforms
+                             CutConcatenate(
+                                 duration_factor=self.args.duration_factor, gap=self.args.gap
+                             )
+                         ] + transforms
 
         input_transforms = []
         if self.args.enable_spec_aug:
@@ -357,15 +354,15 @@ class AsrDataModule:
         return train_dl
 
     def valid_dataloaders(
-        self, cuts_valid: CutSet, use_kmeans: bool = False
+            self, cuts_valid: CutSet, use_kmeans: bool = False
     ) -> DataLoader:
         transforms = []
         if self.args.concatenate_cuts:
             transforms = [
-                CutConcatenate(
-                    duration_factor=self.args.duration_factor, gap=self.args.gap
-                )
-            ] + transforms
+                             CutConcatenate(
+                                 duration_factor=self.args.duration_factor, gap=self.args.gap
+                             )
+                         ] + transforms
 
         logging.info("About to create dev dataset")
         if self.args.on_the_fly_feats:
@@ -458,3 +455,8 @@ class AsrDataModule:
     def test_cuts(self) -> CutSet:
         logging.info("About to get test cuts")
         return load_manifest_lazy(self.args.manifest_dir / "cuts_test.jsonl.gz")
+
+    @lru_cache()
+    def file_cuts(self, name: str) -> CutSet:
+        logging.info(f"About to get custom cuts {name}")
+        return load_manifest_lazy(self.args.manifest_dir / f"cuts_{name}.jsonl.gz")

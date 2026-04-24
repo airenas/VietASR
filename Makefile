@@ -20,7 +20,10 @@ corpus_ssl_dir?=corpus_ssl
 start_epoch?=1
 gpus?=1
 
-epoch?=30
+epoch?=40
+epoch_train?=$(epoch)
+epoch_pretrain?=50
+epoch_finetune?=40
 avg?=10
 
 ##############################################################
@@ -32,12 +35,12 @@ lm_params?=
 max_duration?=1000
 seconds_train_kmeans?=360000
 workers?=4
-ssl_parts?=10
+ssl_parts?=20
 
 $(download_dir) $(data_dir)/manifests $(data_dir)/fbank \
 	$(download_dir)/common_voice $(lang_dir) $(exp_dir) \
 	$(data_dir)/kmeans $(data_dir)/tasks \
-	$(corpus_ssl_dir):
+	$(corpus_ssl_dir) $(common_voice_download_dir)/common_voice:
 	mkdir -p $@
 info:
 	@echo "corpus_dir: $(corpus_dir)"
@@ -48,6 +51,9 @@ info:
 	@echo "seconds_train_kmeans: $(seconds_train_kmeans)"
 	@echo "max_duration: $(max_duration)"
 	@echo "epoch: $(epoch)"
+	@echo "epoch_train: $(epoch_train)"
+	@echo "epoch_pretrain: $(epoch_pretrain)"
+	@echo "epoch_finetune: $(epoch_finetune)"
 	@echo "avg: $(avg)"
 	@echo "workers: $(workers)"
 	@echo "ssl_parts: $(ssl_parts)"	
@@ -90,6 +96,33 @@ $(data_dir)/fbank/cuts_train_100h.jsonl.gz: $(data_dir)/fbank/cuts_train.jsonl.g
 prepare/liepa3: $(data_dir)/fbank/.train.validated $(data_dir)/fbank/.dev.validated $(data_dir)/fbank/.test.validated $(lang_dir)/bpe.model \
 	$(data_dir)/fbank/cuts_train_100h.jsonl.gz
 .PHONY: prepare/liepa3
+##############################################################
+# CommonVoice LT Test Corpus 								 #
+##############################################################
+common_voice_gz?=cv-corpus-24.0-2025-12-05-lt.tar.gz
+common_voice_extr_dir?=cv-corpus-24.0-2025-12-05
+
+${common_voice_download_dir}/${common_voice_gz}: | ${common_voice_download_dir}
+	echo "Manually Download Common Voice LT test corpus to ${common_voice_download_dir}/${common_voice_gz}"
+	exit 1	
+
+$(common_voice_download_dir)/.common-voice.dwn: ${common_voice_download_dir}/${common_voice_gz} | $(common_voice_download_dir)/common_voice
+	tar xvzf ${common_voice_download_dir}/${common_voice_gz} -C $(common_voice_download_dir)/common_voice
+	touch $@	
+$(data_dir)/manifests/cv-lt_supervisions_test.jsonl.gz: $(common_voice_download_dir)/.common-voice.dwn | $(data_dir)/manifests
+	lhotse prepare commonvoice $(common_voice_download_dir)/common_voice/$(common_voice_extr_dir) $(data_dir)/manifests --language=lt --split=test
+$(data_dir)/manifests/cuts_common-voice.jsonl.gz: $(data_dir)/manifests/cv-lt_supervisions_test.jsonl.gz
+	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/prepare_common_voice.py --input $< --output $(data_dir)/manifests/cv-lt_supervisions_test_norm.jsonl.gz
+	lhotse cut simple -r $(data_dir)/manifests/cv-lt_recordings_test.jsonl.gz \
+    	-s $(data_dir)/manifests/cv-lt_supervisions_test_norm.jsonl.gz \
+    	$@
+$(data_dir)/fbank/cuts_common-voice.jsonl.gz: $(data_dir)/manifests/cuts_common-voice.jsonl.gz  | $(data_dir)/fbank
+	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/compute_fbank.py --cuts $(data_dir)/manifests/cuts_common-voice.jsonl.gz --output-dir $(data_dir)/fbank \
+		--partition cv-lt-test --perturb-speed False
+##############################################################
+prepare/common-voice: $(data_dir)/fbank/cuts_common-voice.jsonl.gz
+.PHONY: prepare/common-voice
+##############################################################
 ############################################################
 ### SSL DATA
 ############################################################
@@ -101,16 +134,15 @@ load/s3/%: | $(corpus_ssl_dir)
 
 # one tar is 5 hours of audio, so 5 tars is 25 hours, which is a good chunk to process at once
 $(corpus_ssl_dir)/.loaded.ssl: | $(corpus_ssl_dir)
-	make load/s3/crawl s3_from=0 s3_to=12
+	make load/s3/crawl s3_from=20 s3_to=32
 # crawl-augmented 15h each
-# 	make load/s3/crawl-augmented s3_from=20 s3_to=21 
+	make load/s3/crawl-augmented s3_from=12 s3_to=20
 	make load/s3/08kHz s3_from=0 s3_to=12
 	make load/s3/16kHz s3_from=0 s3_to=12
 	make load/s3/liepa3 s3_from=0 s3_to=12
-# 	make load/s3/voxlingua s3_from=0 s3_to=4 
+	make load/s3/voxlingua s3_from=0 s3_to=4 
 # a lot of non lithuanian data, so skip
 #	make load/s3/voxpopuli s3_from=0 s3_to=4 
-	
 	touch $@
 load/ssl: $(corpus_ssl_dir)/.loaded.ssl
 .PHONY: load/ssl
@@ -135,25 +167,21 @@ prepare/ssl: $(ssl_feat_files) $(data_dir)/fbank/cuts_pretrain_dev.jsonl.gz
 ##############################################################
 # Train Initial LIEPA3 model                                 #
 ##############################################################
+model_params?=--num-encoder-layers 2,2,4,5,4,2 \
+		--feedforward-dim 768,1536,2048,3072,2048,1536 \
+		--encoder-dim 256,512,768,1024,768,512 \
+		--encoder-unmasked-dim 256,256,256,320,256,256
+
 train_params?=--use-fp16 1 --train-cuts 4000h --max-duration $(max_duration) --enable-musan 0 --enable-spec-aug 1 --seed 1332 --master-port 12356 \
-	--bpe-model $(lang_dir)/bpe.model \
-    --num-encoder-layers 2,2,4,5,4,2 \
-    --feedforward-dim 768,1536,2048,3072,2048,1536 \
-    --encoder-dim 256,512,768,1024,768,512 \
-    --encoder-unmasked-dim 256,256,256,320,256,256 \
-    --base-lr 0.045
+	$(model_params) --bpe-model $(lang_dir)/bpe.model --base-lr 0.045
 train: $(data_dir)/fbank/cuts_train.jsonl.gz | $(exp_dir)
 	$(python_cmd) ./ASR/zipformer/train.py --world-size $(gpus) \
-		--num-epochs $(epoch) --start-epoch $(start_epoch) \
+		--num-epochs $(epoch_train) --start-epoch $(start_epoch) \
 		--bpe-model $(lang_dir)/bpe.model --manifest-dir $(data_dir)/fbank \
 		--exp-dir $(exp_dir) \
 		$(train_params) 
 
-decode_params?=--bpe-model $(lang_dir)/bpe.model \
-	--num-encoder-layers 2,2,4,5,4,2 \
-	--feedforward-dim 768,1536,2048,3072,2048,1536 \
-	--encoder-dim 256,512,768,1024,768,512 \
-	--encoder-unmasked-dim 256,256,256,320,256,256
+decode_params?=--bpe-model $(lang_dir)/bpe.model $(model_params) 
 _decode/%: 
 	$(python_cmd) ./ASR/zipformer/decode.py \
     --epoch $(epoch) \
@@ -169,6 +197,7 @@ decode/test: _decode/test
 .PHONY: train decode/test
 ##############################################################
 # Learn Kmeans trained initial models
+# need 100h - RAM problem
 ##############################################################
 $(data_dir)/kmeans/kmeans.pt: $(data_dir)/fbank/cuts_train_100h.jsonl.gz | $(data_dir)/kmeans
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/learn_kmeans.py \
@@ -215,18 +244,14 @@ extract/labels: $(extract_done_files)
 .PHONY: extract/labels
 ##############################################################
 # PRETRAIN
+# need 250k iterations <- from k2SSL
 ##############################################################
-pretrain_params?=--use-fp16 1 --max-duration $(max_duration) \
-	--num-encoder-layers 2,2,4,5,4,2 \
-    --feedforward-dim 768,1536,2048,3072,2048,1536 \
-    --encoder-dim 256,512,768,1024,768,512 \
-    --encoder-unmasked-dim 256,256,256,320,256,256 \
-    --base-lr 0.045
+pretrain_params?=--use-fp16 1 --max-duration $(max_duration) $(model_params) --base-lr 0.045
 
 pretrain:
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/pretrain.py \
 		--world-size $(gpus) \
-		--num-epochs 20 \
+		--num-epochs $(epoch_pretrain) \
 		--start-epoch $(start_epoch)  \
 		--use-fp16 1 \
 		--label-type kmeans \
@@ -249,13 +274,9 @@ pretrain:
 .PHONY: pretrain
 ##############################################################
 # FINETUNE
+# --enable-spec-aug 1 0?
 ##############################################################
-finetune_params?=--use-fp16 1 --max-duration $(max_duration) \
-	--num-encoder-layers 2,2,4,5,4,2 \
-	--feedforward-dim 768,1536,2048,3072,2048,1536 \
-	--encoder-dim 256,512,768,1024,768,512 \
-	--encoder-unmasked-dim 256,256,256,320,256,256 \
-	--base-lr 0.002 \
+finetune_params?=--use-fp16 1 --max-duration $(max_duration) $(model_params) --base-lr 0.002 \
 	--enable-musan 0 --enable-spec-aug 0 \
 	--mask-before-cnn 1 \
 	--mask-prob 0.65 \
@@ -268,7 +289,7 @@ finetune_params?=--use-fp16 1 --max-duration $(max_duration) \
 finetune: 
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/finetune.py \
 		--world-size $(gpus) \
-		--num-epochs $(epoch) \
+		--num-epochs $(epoch_finetune) \
 		--start-epoch $(start_epoch) \
 		--sample-rate 100 \
 		--manifest-dir $(data_dir)/fbank \
@@ -283,12 +304,7 @@ finetune:
 ##############################################################
 # DECODE FINETUNE
 ##############################################################
-decode_fine_params?=--bpe-model $(lang_dir)/bpe.model \
-	--num-encoder-layers 2,2,4,5,4,2 \
-	--feedforward-dim 768,1536,2048,3072,2048,1536 \
-	--encoder-dim 256,512,768,1024,768,512 \
-	--encoder-unmasked-dim 256,256,256,320,256,256 \
-	--final-downsample 1
+decode_fine_params?=--bpe-model $(lang_dir)/bpe.model $(model_params) --final-downsample 1
 _decode/finetune/%: 
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/decode.py \
 		--epoch $(epoch) \

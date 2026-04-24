@@ -700,7 +700,7 @@ def decode_dataset(
     try:
         num_batches = len(dl)
     except TypeError:
-        num_batches = None
+        num_batches = sum(1 for _ in tqdm(dl, desc="Counting batches"))
 
     results = defaultdict(list)
     pbar = tqdm(dl, total=num_batches, desc="Decoding")
@@ -1051,29 +1051,6 @@ def main():
     test_cuts_lis = []
     test_sets = []
 
-    def remove_short_and_long_utt(c):
-        # Keep only utterances with duration between 1 second and 20 seconds
-        #
-        # Caution: There is a reason to select 20.0 here. Please see
-        # ../local/display_manifest_statistics.py
-        #
-        # You should use ../local/display_manifest_statistics.py to get
-        # an utterance duration distribution for your dataset to select
-        # the threshold
-        if c.duration > 30.0:
-            # logging.warning(
-            #     f"Exclude cut with ID {c.id} from training. Duration: {c.duration}"
-            # )
-            return False
-
-        # In pruned RNN-T, we require that T >= S
-        # where T is the number of feature frames after subsampling
-        # and S is the number of tokens in the utterance
-
-        # In ./zipformer.py, the conv module uses the following expression
-        # for subsampling
-        return True
-
     def normalize_text(
         text: str,
     ) -> str:
@@ -1119,6 +1096,9 @@ def main():
     elif args.cuts_name == "dev":
         test_sets.append("dev")
         test_cuts_lis.append(finetune_datamoddule.dev_cuts())
+    else:
+        test_sets.append(args.cuts_name)
+        test_cuts_lis.append(finetune_datamoddule.file_cuts(args.cuts_name))
     test_dl = [
         finetune_datamoddule.test_dataloaders(test_cuts) for test_cuts in test_cuts_lis
     ]

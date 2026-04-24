@@ -65,6 +65,8 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import k2
 import lhotse
+from tqdm import tqdm
+
 import optim
 import sentencepiece as spm
 import torch
@@ -623,6 +625,8 @@ def get_params() -> AttributeDict:
             "label_smoothing": 0.1,
             "warm_step": 2000,
             "env_info": get_env_info(),
+            "dev_batches": 0,
+            "train_batches": 0,
         }
     )
 
@@ -996,7 +1000,9 @@ def compute_validation_loss(
 
     tot_loss = MetricsTracker()
 
-    for batch_idx, batch in enumerate(valid_dl):
+    batches = 0
+    for batch_idx, batch in enumerate(tqdm(valid_dl, desc="Validation", total=params.dev_batches if params.dev_batches > 0 else None)):
+        batches = batch_idx + 1
         loss, loss_info = compute_loss(
             params=params,
             model=model,
@@ -1006,6 +1012,8 @@ def compute_validation_loss(
         )
         assert loss.requires_grad is False
         tot_loss = tot_loss + loss_info
+
+    params.dev_batches = batches
 
     if world_size > 1:
         tot_loss.reduce(loss.device)
@@ -1082,7 +1090,9 @@ def train_one_epoch(
             rank=0,
         )
 
-    for batch_idx, batch in enumerate(train_dl):
+    batches = 0
+    for batch_idx, batch in enumerate(tqdm(train_dl, desc=f"Epoch {params.cur_epoch}", total=params.train_batches if params.train_batches > 0 else None)):
+        batches = batch_idx + 1
         if batch_idx % 10 == 0:
             set_batch_count(model, get_adjusted_batch_count(params))
 
@@ -1212,6 +1222,8 @@ def train_one_epoch(
                 valid_info.write_summary(
                     tb_writer, "train/valid_", params.batch_idx_train
                 )
+
+    params.train_batches = batches
 
     loss_value = tot_loss["loss"] / tot_loss["frames"]
     params.train_loss = loss_value
