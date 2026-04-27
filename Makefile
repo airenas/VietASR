@@ -134,13 +134,13 @@ load/s3/%: | $(corpus_ssl_dir)
 
 # one tar is 5 hours of audio, so 5 tars is 25 hours, which is a good chunk to process at once
 $(corpus_ssl_dir)/.loaded.ssl: | $(corpus_ssl_dir)
-	make load/s3/crawl s3_from=20 s3_to=32
+	make load/s3/crawl s3_from=25 s3_to=50
 # crawl-augmented 15h each
-	make load/s3/crawl-augmented s3_from=12 s3_to=20
-	make load/s3/08kHz s3_from=0 s3_to=12
-	make load/s3/16kHz s3_from=0 s3_to=12
-	make load/s3/liepa3 s3_from=0 s3_to=12
-	make load/s3/voxlingua s3_from=0 s3_to=4 
+	make load/s3/crawl-augmented s3_from=0 s3_to=25
+	make load/s3/08kHz s3_from=0 s3_to=25
+	make load/s3/16kHz s3_from=0 s3_to=25
+	make load/s3/liepa3 s3_from=0 s3_to=25
+	make load/s3/voxlingua s3_from=0 s3_to=13
 # a lot of non lithuanian data, so skip
 #	make load/s3/voxpopuli s3_from=0 s3_to=4 
 	touch $@
@@ -165,7 +165,9 @@ $(data_dir)/fbank/%: $(data_dir)/manifests/% | $(data_dir)/fbank
 prepare/ssl: $(ssl_feat_files) $(data_dir)/fbank/cuts_pretrain_dev.jsonl.gz
 .PHONY: prepare/ssl
 ##############################################################
-# Train Initial LIEPA3 model                                 #
+# Train Initial LIEPA3 model  
+# on ADA 4000
+# - nohup train max_duration=350                             #
 ##############################################################
 model_params?=--num-encoder-layers 2,2,4,5,4,2 \
 		--feedforward-dim 768,1536,2048,3072,2048,1536 \
