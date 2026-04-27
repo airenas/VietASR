@@ -199,7 +199,6 @@ decode/test: _decode/test
 .PHONY: train decode/test
 ##############################################################
 # Learn Kmeans trained initial models
-# need 100h - RAM problem
 ##############################################################
 $(data_dir)/kmeans/kmeans.pt: $(data_dir)/fbank/cuts_train_100h.jsonl.gz | $(data_dir)/kmeans
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/learn_kmeans.py \
@@ -219,6 +218,7 @@ learn/kmeans: $(data_dir)/kmeans/kmeans.pt
 .PHONY: learn/kmeans
 ##############################################################
 # Extract labels
+# ADA 4000 max_duration 90 only
 ##############################################################
 gpu_nums := $(shell seq 0 $$(($(gpus)-1)))
 extract_files := $(foreach r,$(gpu_nums),$(data_dir)/tasks/extract.lists.$(r))	
@@ -247,6 +247,7 @@ extract/labels: $(extract_done_files)
 ##############################################################
 # PRETRAIN
 # need 250k iterations <- from k2SSL
+# max_duration=600 for ADA 4000
 ##############################################################
 pretrain_params?=--use-fp16 1 --max-duration $(max_duration) $(model_params) --base-lr 0.045
 
