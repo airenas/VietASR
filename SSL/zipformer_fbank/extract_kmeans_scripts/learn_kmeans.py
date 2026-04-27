@@ -6,10 +6,8 @@
 import argparse
 import logging
 import os
-import random
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
 
 import finetune
 import joblib
@@ -26,12 +24,8 @@ from icefall.checkpoint import (
     load_checkpoint,
 )
 from icefall.utils import str2bool
-from lhotse import CutSet, load_manifest_lazy
-from lhotse.dataset import DynamicBucketingSampler, SimpleCutSampler
 from lhotse.utils import fix_random_seed
-from lhotse.workarounds import Hdf5MemoryIssueFix
 from sklearn.cluster import MiniBatchKMeans
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from utils import get_avg_checkpoint
 
@@ -53,14 +47,14 @@ class _SeedWorkers:
 
 
 def get_km_model(
-    n_clusters,
-    init,
-    max_iter,
-    batch_size,
-    tol,
-    max_no_improvement,
-    n_init,
-    reassignment_ratio,
+        n_clusters,
+        init,
+        max_iter,
+        batch_size,
+        tol,
+        max_no_improvement,
+        n_init,
+        reassignment_ratio,
 ):
     logger.info("Creating MiniBatchKMeans model")
     return MiniBatchKMeans(
@@ -156,8 +150,8 @@ def get_parser():
         type=int,
         default=15,
         help="Number of checkpoints to average. Automatically select "
-        "consecutive checkpoints before the checkpoint specified by "
-        "'--epoch' and '--iter'",
+             "consecutive checkpoints before the checkpoint specified by "
+             "'--epoch' and '--iter'",
     )
 
     parser.add_argument(
@@ -165,10 +159,10 @@ def get_parser():
         type=str2bool,
         default=True,
         help="Whether to load averaged model. Currently it only supports "
-        "using --epoch. If True, it would decode with the averaged model "
-        "over the epoch range from `epoch-avg` (excluded) to `epoch`."
-        "Actually only the models with epoch number of `epoch-avg` and "
-        "`epoch` are loaded for averaging. ",
+             "using --epoch. If True, it would decode with the averaged model "
+             "over the epoch range from `epoch-avg` (excluded) to `epoch`."
+             "Actually only the models with epoch number of `epoch-avg` and "
+             "`epoch` are loaded for averaging. ",
     )
 
     parser.add_argument(
@@ -204,7 +198,7 @@ def get_parser():
         type=int,
         default=5,
         help="The prune range for rnnt loss, it means how many symbols(context)"
-        "we are using to compute the loss",
+             "we are using to compute the loss",
     )
 
     add_model_arguments(parser)
@@ -234,7 +228,7 @@ def get_model(params, device):
         if params.checkpoint_type == "ASR":
             for item in list(checkpoint):
                 if not item.startswith("encoder.") and not item.startswith(
-                    "encoder_embed."
+                        "encoder_embed."
                 ):
                     checkpoint.pop(item)
             checkpoint.pop("encoder.downsample_output.bias")
@@ -252,21 +246,39 @@ def get_model(params, device):
     return model
 
 
+def grow_mm(mm, mm_path, dtype, new_capacity, offset, feat_shape):
+    logger.info(f"Growing memmap to {new_capacity}")
+    new_mm = np.memmap(str(mm_path) + ".tmp", dtype=dtype, mode="w+", shape=(new_capacity, *feat_shape))
+    new_mm[:offset] = mm[:offset]
+    del mm
+    os.replace(str(mm_path) + ".tmp", mm_path)
+    return np.memmap(mm_path, dtype=dtype, mode="r+", shape=(new_capacity, *feat_shape))
+
+
+def shrink_mm(mm, mm_path, dtype, offset, feat_shape):
+    logger.info(f"Shrinking memmap to {offset}")
+    new_mm = np.memmap(str(mm_path) + ".tmp", dtype=dtype, mode="w+", shape=(offset, *feat_shape))
+    new_mm[:] = mm[:offset]
+    del mm
+    os.replace(str(mm_path) + ".tmp", mm_path)
+    return np.memmap(mm_path, dtype=dtype, mode="r", shape=(offset, *feat_shape))
+
+
 def learn_kmeans(
-    args,
-    do_training,
-    files,
-    src_dir,
-    km_path,
-    n_clusters,
-    seed,
-    init,
-    max_iter,
-    batch_size,
-    tol,
-    n_init,
-    reassignment_ratio,
-    max_no_improvement,
+        args,
+        do_training,
+        files,
+        src_dir,
+        km_path,
+        n_clusters,
+        seed,
+        init,
+        max_iter,
+        batch_size,
+        tol,
+        n_init,
+        reassignment_ratio,
+        max_no_improvement,
 ):
     np.random.seed(seed)
     if do_training:
@@ -294,33 +306,60 @@ def learn_kmeans(
         device = torch.device("cuda:0")
     logging.info(f"Device: {device}")
 
-    part_feats_holder = []
     model = get_model(args, device)
 
-    ## pre-calculate the number of batches for tqdm
     num_batches = sum(1 for _ in tqdm(train_dl, desc="Calculating number of batches"))
     train_dl = finetune_datamoddule.test_dataloaders(cuts)
 
-    logger.info("Extracting features")
-    for batch in tqdm(train_dl, desc="Extracting features", total=num_batches):
-        part_feats_holder.append(extract_feature(batch, model))
-    del model
-    del train_dl
+    mm_path = Path(km_path).with_suffix(".mmap")
+    dtype = "float32"
 
-    logger.info("Concatenating features")
+    capacity = 10000
+    feat_shape = None
 
-    part_feats = np.concatenate(part_feats_holder, axis=0)
-    del part_feats_holder
+    mm = None
+    try:
+        offset = 0
 
-    logging.info(f"data size: {part_feats.shape}")
-    if do_training:
-        km_model.fit(part_feats)
-        joblib.dump(km_model, km_path)
-    inertia = -km_model.score(part_feats) / len(part_feats)
-    logging.info(f"Total inertia: {inertia:.5f}")
+        logger.info("Extracting features (1-pass)")
+        for i, batch in enumerate(tqdm(train_dl, desc="Extracting features", total=num_batches)):
+            feats = extract_feature(batch, model)
+            n = feats.shape[0]
+            if mm is None:
+                feat_shape = feats.shape[1:]
+                mm = np.memmap(mm_path, dtype=dtype, mode="w+", shape=(capacity, *feat_shape))
+                # grow if needed
+            if offset + n > capacity:
+                if i > 0:
+                    capacity = int((offset * num_batches / i) * 1.1)
+                else:
+                    capacity = int(capacity * 2)
+                capacity = max(capacity, offset + n)
+                mm = grow_mm(mm, mm_path, dtype, capacity, offset, feat_shape)
 
-    # inertia = -km_model.score(feat) / len(feat)
-    # logger.info("total intertia: %.5f", inertia)
+            mm[offset:offset + n] = feats
+            offset += n
+
+        del model
+        del train_dl
+
+        mm = shrink_mm(mm, mm_path, dtype, offset, feat_shape)
+
+        logger.info("Concatenating features")
+        part_feats = mm
+
+        logging.info(f"data size: {part_feats.shape}")
+        if do_training:
+            km_model.fit(part_feats)
+            joblib.dump(km_model, km_path)
+        inertia = -km_model.score(part_feats) / len(part_feats)
+        logging.info(f"Total inertia: {inertia:.5f}")
+    finally:
+        try:
+            os.remove(mm_path)
+        except FileNotFoundError:
+            pass
+
     logger.info("finished successfully")
 
 
