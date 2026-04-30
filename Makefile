@@ -298,7 +298,7 @@ finetune:
 		--manifest-dir $(data_dir)/fbank \
 		--bpe-model $(lang_dir)/bpe.model \
 		--exp-dir $(finetune_exp_dir) \
-		--pretrained-checkpoint-path $(pretrain_exp_dir)/epoch-20.pt \
+		--pretrained-checkpoint-path $(pretrain_exp_dir)/epoch-$(epoch_pretrain).pt \
 		--final-downsample 1 \
 		--causal 0 \
 		--seed 1556 \
@@ -320,6 +320,6 @@ _decode/finetune/%:
 		--decoding-method greedy_search \
 		--cuts-name $*  
 decode/finetune/test: _decode/finetune/test
-.PHONY: train decode/test
+.PHONY: decode/finetune/test
 ##############################################################
 .EXPORT_ALL_VARIABLES:
