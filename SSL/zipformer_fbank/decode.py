@@ -665,7 +665,7 @@ def decode_dataset(
     try:
         num_batches = len(dl)
     except TypeError:
-        num_batches = None
+        num_batches = sum(1 for _ in tqdm(dl, desc="Counting batches"))
 
     results = defaultdict(list)
     pbar = tqdm(dl, total=num_batches, desc="Decoding")
@@ -1018,6 +1018,9 @@ def main():
     elif args.cuts_name == "dev":
         test_sets.append("dev")
         test_cuts_lis.append(finetune_datamoddule.dev_cuts())
+    else:
+        test_sets.append(args.cuts_name)
+        test_cuts_lis.append(finetune_datamoddule.file_cuts(args.cuts_name))
 
     test_dl = [
         finetune_datamoddule.test_dataloaders(test_cuts) for test_cuts in test_cuts_lis

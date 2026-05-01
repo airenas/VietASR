@@ -617,3 +617,8 @@ class FinetuneAsrDataModule:
     def test_cuts(self) -> CutSet:
         logging.info("About to get test cuts")
         return load_manifest_lazy(self.args.manifest_dir / "cuts_test.jsonl.gz")
+
+    @lru_cache()
+    def file_cuts(self, name: str) -> CutSet:
+        logging.info(f"About to get custom cuts {name}")
+        return load_manifest_lazy(self.args.manifest_dir / f"cuts_{name}.jsonl.gz")
