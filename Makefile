@@ -54,6 +54,8 @@ info:
 	@echo "epoch_train: $(epoch_train)"
 	@echo "epoch_pretrain: $(epoch_pretrain)"
 	@echo "epoch_finetune: $(epoch_finetune)"
+	@echo "pretrain_exp_dir: $(pretrain_exp_dir)"
+	@echo "finetune_exp_dir: $(finetune_exp_dir)"
 	@echo "avg: $(avg)"
 	@echo "workers: $(workers)"
 	@echo "ssl_parts: $(ssl_parts)"	
@@ -278,6 +280,7 @@ pretrain:
 ##############################################################
 # FINETUNE
 # --enable-spec-aug 1 0?
+# mask_duration=300 for ADA 4000
 ##############################################################
 finetune_params?=--use-fp16 1 --max-duration $(max_duration) $(model_params) --base-lr 0.002 \
 	--enable-musan 0 --enable-spec-aug 0 \
