@@ -54,6 +54,7 @@ info:
 	@echo "epoch_train: $(epoch_train)"
 	@echo "epoch_pretrain: $(epoch_pretrain)"
 	@echo "epoch_finetune: $(epoch_finetune)"
+	@echo "exp_dir:          $(exp_dir)"
 	@echo "pretrain_exp_dir: $(pretrain_exp_dir)"
 	@echo "finetune_exp_dir: $(finetune_exp_dir)"
 	@echo "avg: $(avg)"
@@ -73,10 +74,10 @@ $(corpus_ln_dir): | $(corpus_dir)
 	ln -s $(corpus_dir) $@
 
 $(data_dir)/manifests/cuts_train.jsonl.gz $(data_dir)/manifests/cuts_dev.jsonl.gz $(data_dir)/manifests/cuts_test.jsonl.gz: | $(data_dir)/manifests $(corpus_ln_dir)
-	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/prepare_corpus.py --corpus-dir $(corpus_ln_dir) --transcript-file $(corpus_ln_dir)/verified_utterances_20260121.csv \
+	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/prepare_corpus.py --corpus-dir $(corpus_ln_dir) --transcript-file $(corpus_ln_dir)/metadata.csv \
           --output-dir $(data_dir)/manifests --limit-count $(limit_count)
-    # Split train/dev/test (90/5/5)
-	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/split.py --manifest-dir $(data_dir)/manifests
+    # Split train/dev/test (90/5/5) or 20h for dev and test, whichever is smaller
+	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/split.py --manifest-dir $(data_dir)/manifests --max-duration 72000
 
 $(data_dir)/fbank/cuts_train.jsonl.gz $(data_dir)/fbank/cuts_dev.jsonl.gz $(data_dir)/fbank/cuts_test.jsonl.gz: $(data_dir)/manifests/cuts_train.jsonl.gz $(data_dir)/manifests/cuts_dev.jsonl.gz $(data_dir)/manifests/cuts_test.jsonl.gz | $(data_dir)/fbank
 	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/compute_fbank_liepa3.py --input-dir $(data_dir)/manifests --output-dir $(data_dir)/fbank
@@ -174,7 +175,8 @@ prepare/ssl: $(ssl_feat_files) $(data_dir)/fbank/cuts_pretrain_dev.jsonl.gz
 model_params?=--num-encoder-layers 2,2,4,5,4,2 \
 		--feedforward-dim 768,1536,2048,3072,2048,1536 \
 		--encoder-dim 256,512,768,1024,768,512 \
-		--encoder-unmasked-dim 256,256,256,320,256,256
+		--encoder-unmasked-dim 256,256,256,320,256,256 \
+		--use-ctc 1 --use-transducer 1
 
 train_params?=--use-fp16 1 --train-cuts 4000h --max-duration $(max_duration) --enable-musan 0 --enable-spec-aug 1 --seed 1332 --master-port 12356 \
 	$(model_params) --bpe-model $(lang_dir)/bpe.model --base-lr 0.045
