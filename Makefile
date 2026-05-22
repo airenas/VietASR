@@ -4,8 +4,10 @@ cfg?=Makefile.options
 LOGLEVEL?=INFO
 
 exp_dir?=data/exp/v01
+data_dir?=data
 pretrain_exp_dir?=data/exp/pretrain_v01
 finetune_exp_dir?=data/exp/finetune_v01
+train_fbank_dir?=$(data_dir)/fbank
 
 icefall_dir?=./../icefall
 
@@ -28,7 +30,6 @@ avg?=10
 
 ##############################################################
 download_dir?=data/download
-data_dir?=data
 vocab_size?=500
 lang_dir=$(data_dir)/lang_bpe_${vocab_size}
 lm_params?=
@@ -40,12 +41,14 @@ ssl_parts?=20
 $(download_dir) $(data_dir)/manifests $(data_dir)/fbank \
 	$(download_dir)/common_voice $(lang_dir) $(exp_dir) \
 	$(data_dir)/kmeans $(data_dir)/tasks \
-	$(corpus_ssl_dir) $(common_voice_download_dir)/common_voice:
+	$(corpus_ssl_dir) $(common_voice_download_dir)/common_voice \
+	$(train_fbank_dir):
 	mkdir -p $@
 info:
 	@echo "corpus_dir: $(corpus_dir)"
 	@echo "icefall_dir: $(icefall_dir)"
 	@echo "vocab_size: $(vocab_size)"
+	@echo "train_fbank_dir: $(train_fbank_dir)"
 	@echo "gpus: $(gpus)"
 	@echo "train_params: $(train_params)"
 	@echo "seconds_train_kmeans: $(seconds_train_kmeans)"
@@ -73,11 +76,12 @@ install_deps:
 $(corpus_ln_dir): | $(corpus_dir)
 	ln -s $(corpus_dir) $@
 
-$(data_dir)/manifests/cuts_train.jsonl.gz $(data_dir)/manifests/cuts_dev.jsonl.gz $(data_dir)/manifests/cuts_test.jsonl.gz: | $(data_dir)/manifests $(corpus_ln_dir)
+$(data_dir)/manifests/cuts_all.jsonl.gz: | $(data_dir)/manifests $(corpus_ln_dir)
 	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/prepare_corpus.py --corpus-dir $(corpus_ln_dir) --transcript-file $(corpus_ln_dir)/metadata.csv \
           --output-dir $(data_dir)/manifests --limit-count $(limit_count)
+$(data_dir)/manifests/cuts_train.jsonl.gz $(data_dir)/manifests/cuts_dev.jsonl.gz $(data_dir)/manifests/cuts_test.jsonl.gz: $(data_dir)/manifests/cuts_all.jsonl.gz		  
     # Split train/dev/test (90/5/5) or 20h for dev and test, whichever is smaller
-	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/split.py --manifest-dir $(data_dir)/manifests --max-duration 72000
+	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/split_smart.py --manifest-dir $(data_dir)/manifests --speakers $(corpus_ln_dir)/speakers.csv 
 
 $(data_dir)/fbank/cuts_train.jsonl.gz $(data_dir)/fbank/cuts_dev.jsonl.gz $(data_dir)/fbank/cuts_test.jsonl.gz: $(data_dir)/manifests/cuts_train.jsonl.gz $(data_dir)/manifests/cuts_dev.jsonl.gz $(data_dir)/manifests/cuts_test.jsonl.gz | $(data_dir)/fbank
 	$(python_cmd) $(icefall_dir)/egs/liepa3/ASR/local/compute_fbank_liepa3.py --input-dir $(data_dir)/manifests --output-dir $(data_dir)/fbank
@@ -95,7 +99,10 @@ $(lang_dir)/bpe.model: $(lang_dir)/transcript_words.txt
 
 $(data_dir)/fbank/cuts_train_100h.jsonl.gz: $(data_dir)/fbank/cuts_train.jsonl.gz
 	$(python_cmd) ./ASR/local/take_cuts.py --input $< --output $@ --secs $(seconds_train_kmeans)
-
+$(train_fbank_dir)/cuts_%.jsonl.gz: $(data_dir)/fbank/cuts_%.jsonl.gz | $(train_fbank_dir)
+	$(python_cmd) ./ASR/local/fix_cuts_path.py --input $< --output $@ --storage_path_dir $(data_dir)/fbank/feats_$*
+fix/fbank: $(train_fbank_dir)/cuts_dev.jsonl.gz $(train_fbank_dir)/cuts_test.jsonl.gz $(train_fbank_dir)/cuts_train.jsonl.gz
+.PHONY: fix/fbank
 prepare/liepa3: $(data_dir)/fbank/.train.validated $(data_dir)/fbank/.dev.validated $(data_dir)/fbank/.test.validated $(lang_dir)/bpe.model \
 	$(data_dir)/fbank/cuts_train_100h.jsonl.gz
 .PHONY: prepare/liepa3
@@ -180,10 +187,10 @@ model_params?=--num-encoder-layers 2,2,4,5,4,2 \
 
 train_params?=--use-fp16 1 --train-cuts 4000h --max-duration $(max_duration) --enable-musan 0 --enable-spec-aug 1 --seed 1332 --master-port 12356 \
 	$(model_params) --bpe-model $(lang_dir)/bpe.model --base-lr 0.045
-train: $(data_dir)/fbank/cuts_train.jsonl.gz | $(exp_dir)
+train: $(train_fbank_dir)/cuts_train.jsonl.gz $(train_fbank_dir)/cuts_dev.jsonl.gz | $(exp_dir)
 	$(python_cmd) ./ASR/zipformer/train.py --world-size $(gpus) \
 		--num-epochs $(epoch_train) --start-epoch $(start_epoch) \
-		--bpe-model $(lang_dir)/bpe.model --manifest-dir $(data_dir)/fbank \
+		--bpe-model $(lang_dir)/bpe.model --manifest-dir $(train_fbank_dir) \
 		--exp-dir $(exp_dir) \
 		$(train_params) 
 
@@ -196,7 +203,7 @@ _decode/%:
     --max-duration $(max_duration) \
 	$(decode_params) \
     --decoding-method greedy_search \
-    --manifest-dir $(data_dir)/fbank \
+    --manifest-dir $(train_fbank_dir) \
     --use-averaged-model 1 \
     --cuts-name $*  
 decode/test: _decode/test
@@ -204,12 +211,12 @@ decode/test: _decode/test
 ##############################################################
 # Learn Kmeans trained initial models
 ##############################################################
-$(data_dir)/kmeans/kmeans.pt: $(data_dir)/fbank/cuts_train_100h.jsonl.gz | $(data_dir)/kmeans
+$(data_dir)/kmeans/kmeans.pt: $(train_fbank_dir)/cuts_train_100h.jsonl.gz | $(data_dir)/kmeans
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/learn_kmeans.py \
 		--km-path $(data_dir)/kmeans/kmeans.pt \
     	--n-clusters 500 \
     	--max-iter 100 \
-    	--files $(data_dir)/fbank/cuts_train_100h.jsonl.gz \
+    	--files $(train_fbank_dir)/cuts_train_100h.jsonl.gz \
     	--do-training \
     	--pretrained-dir $(exp_dir) \
     	--epoch $(epoch) \
