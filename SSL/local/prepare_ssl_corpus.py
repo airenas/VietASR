@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 import argparse
-import glob
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
-from itertools import chain
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -61,8 +59,41 @@ def _parse_utterance(
         language=lang,
         text="",
     )
-
     return recording, segment
+
+
+def iter_audio(root: Path, follow_symlinks: bool = True):
+    """
+    Recursively yield .wav files.
+
+    Prevents infinite recursion caused by symlink loops by tracking
+    visited directories using (device, inode).
+    """
+
+    visited = set()
+
+    for dirpath, dirnames, filenames in os.walk(
+            root,
+            followlinks=follow_symlinks,
+    ):
+        try:
+            stat = os.stat(dirpath)
+        except OSError:
+            continue
+
+        dir_id = (stat.st_dev, stat.st_ino)
+
+        # Prevent revisiting the same directory via symlink loops
+        if dir_id in visited:
+            dirnames[:] = []
+            continue
+
+        visited.add(dir_id)
+
+        for filename in filenames:
+            if filename.lower().endswith(".wav") or filename.lower().endswith(".flac"):
+                yield Path(dirpath) / filename
+
 
 def main():
     args = get_args()
@@ -71,44 +102,39 @@ def main():
     logging.info(f"output                :  {args.output_file}")
     logging.info(f"workers               :  {args.workers}")
 
-
     corpus_dir = Path(args.corpus_dir)
     output_file = Path(args.output_file)
 
     # collect files in dir
-    wav_paths = chain(
-        glob.iglob(f"{corpus_dir}/**/*.wav", recursive=True),
-        glob.iglob(f"{corpus_dir}/**/*.flac", recursive=True),
-    )
+    wav_paths = iter_audio(root=corpus_dir)
 
-    recordings = []
-    supervisions = []
-    with ThreadPoolExecutor(args.workers) as ex:
-        futures = []
-        for wav_path in tqdm(wav_paths, desc="Distributing tasks"):
-            futures.append(ex.submit(_parse_utterance, Path(wav_path), "lt"))
+    process, skip = 0, 0
+    with CutSet.open_writer(output_file) as writer:
+        with ThreadPoolExecutor(args.workers) as ex:
 
-        for future in tqdm(futures, desc="Processing"):
-            result = future.result()
-            if result is None:
-                continue
-            recording, segment = result
-            if recording.duration <= 0.2:
-                logging.warning(f"Recording {recording.id} is too short ({recording.duration:.2f} secs) - skipping")
-                continue
-            recordings.append(recording)
-            supervisions.append(segment)
+            futures = []
+            for wav_path in tqdm(wav_paths, desc="Distributing tasks"):
+                futures.append(ex.submit(_parse_utterance, Path(wav_path), "lt"))
 
-    recording_set = RecordingSet.from_recordings(recordings)
-    supervision_set = SupervisionSet.from_segments(supervisions)
+            for future in tqdm(futures, desc="Processing"):
+                result = future.result()
+                if result is None:
+                    continue
+                recording, segment = result
+                if recording.duration <= 0.2:
+                    logging.warning(f"Recording {recording.id} is too short ({recording.duration:.2f} secs) - skipping")
+                    skip += 1
+                    continue
+                one_cutset = CutSet.from_manifests(
+                    recordings=RecordingSet.from_recordings([recording]),
+                    supervisions=SupervisionSet.from_segments([segment]),
+                )
+                one_cutset = one_cutset.resample(16000)
+                for cut in one_cutset:
+                    writer.write(cut)
+                    process += 1
 
-    logging.info(f"Collected {len(recording_set)} recordings and {len(supervision_set)} supervisions")
-    cuts = CutSet.from_manifests(
-        recordings=recording_set,
-        supervisions=supervision_set,
-    )
-
-    cuts.to_file(output_file)
+    logging.info(f"Collected {process} recordings, skipped too short{skip}")
     logging.info(f"Written cuts to {output_file}")
 
 

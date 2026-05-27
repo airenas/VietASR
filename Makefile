@@ -5,13 +5,14 @@ LOGLEVEL?=INFO
 
 exp_dir?=data/exp/v01
 data_dir?=data
+new_data_dir?=$(data_dir)
 pretrain_exp_dir?=data/exp/pretrain_v01
 finetune_exp_dir?=data/exp/finetune_v01
 train_fbank_dir?=$(data_dir)/fbank
 
 icefall_dir?=./../icefall
 
-python_cmd=PYTHONPATH=$(icefall_dir) LOG_LEVEL=$(LOGLEVEL) python3
+python_cmd=PYTHONPATH=$(icefall_dir) LOGLEVEL=$(LOGLEVEL) python3
 python_ssl_cmd=PYTHONPATH=./SSL/zipformer_fbank:$(icefall_dir) LOG_LEVEL=$(LOGLEVEL) python3
 decode_limit?=0
 limit_count?=100000000000000
@@ -27,7 +28,8 @@ epoch_train?=$(epoch)
 epoch_pretrain?=50
 epoch_finetune?=40
 avg?=10
-
+OPENBLAS_NUM_THREADS=1
+OMP_NUM_THREADS=1
 ##############################################################
 download_dir?=data/download
 vocab_size?=500
@@ -100,7 +102,7 @@ $(lang_dir)/bpe.model: $(lang_dir)/transcript_words.txt
 $(data_dir)/fbank/cuts_train_100h.jsonl.gz: $(data_dir)/fbank/cuts_train.jsonl.gz
 	$(python_cmd) ./ASR/local/take_cuts.py --input $< --output $@ --secs $(seconds_train_kmeans)
 $(train_fbank_dir)/cuts_%.jsonl.gz: $(data_dir)/fbank/cuts_%.jsonl.gz | $(train_fbank_dir)
-	$(python_cmd) ./ASR/local/fix_cuts_path.py --input $< --output $@ --storage_path_dir $(data_dir)/fbank/feats_$*
+	$(python_cmd) ./ASR/local/fix_cuts_path.py --input $< --output $@ --storage_path_dir $(new_data_dir)/fbank/feats_$*
 fix/fbank: $(train_fbank_dir)/cuts_dev.jsonl.gz $(train_fbank_dir)/cuts_test.jsonl.gz $(train_fbank_dir)/cuts_train.jsonl.gz
 .PHONY: fix/fbank
 prepare/liepa3: $(data_dir)/fbank/.train.validated $(data_dir)/fbank/.dev.validated $(data_dir)/fbank/.test.validated $(lang_dir)/bpe.model \
@@ -144,12 +146,12 @@ load/s3/%: | $(corpus_ssl_dir)
 
 # one tar is 5 hours of audio, so 5 tars is 25 hours, which is a good chunk to process at once
 $(corpus_ssl_dir)/.loaded.ssl: | $(corpus_ssl_dir)
-	make load/s3/crawl s3_from=25 s3_to=50
+	make load/s3/crawl s3_from=0 s3_to=4492
 # crawl-augmented 15h each
-	make load/s3/crawl-augmented s3_from=0 s3_to=25
-	make load/s3/08kHz s3_from=0 s3_to=25
-	make load/s3/16kHz s3_from=0 s3_to=25
-	make load/s3/liepa3 s3_from=0 s3_to=25
+	make load/s3/crawl-augmented s3_from=0 s3_to=4492
+	make load/s3/08kHz s3_from=0 s3_to=206
+	make load/s3/16kHz s3_from=0 s3_to=508
+# 	make load/s3/liepa3 s3_from=0 s3_to=25
 	make load/s3/voxlingua s3_from=0 s3_to=13
 # a lot of non lithuanian data, so skip
 #	make load/s3/voxpopuli s3_from=0 s3_to=4 
