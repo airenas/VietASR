@@ -28,8 +28,9 @@ epoch_train?=$(epoch)
 epoch_pretrain?=50
 epoch_finetune?=40
 avg?=10
-OPENBLAS_NUM_THREADS=1
-OMP_NUM_THREADS=1
+omp_threads?=1
+OPENBLAS_NUM_THREADS=$(omp_threads)
+OMP_NUM_THREADS=$(omp_threads)
 ##############################################################
 download_dir?=data/download
 vocab_size?=500
@@ -37,8 +38,8 @@ lang_dir=$(data_dir)/lang_bpe_${vocab_size}
 lm_params?=
 max_duration?=1000
 seconds_train_kmeans?=360000
-workers?=4
-ssl_parts?=20
+workers?=5
+ssl_parts?=40
 
 $(download_dir) $(data_dir)/manifests $(data_dir)/fbank \
 	$(download_dir)/common_voice $(lang_dir) $(exp_dir) \
@@ -66,6 +67,7 @@ info:
 	@echo "workers: $(workers)"
 	@echo "ssl_parts: $(ssl_parts)"	
 	@echo "ssl_feat_files: $(ssl_feat_files)"	
+	@echo "omp_threads: $(omp_threads)"
 		
 .PHONY: info	
 
@@ -214,6 +216,7 @@ decode/test: _decode/test
 # Learn Kmeans trained initial models
 ##############################################################
 $(data_dir)/kmeans/kmeans.pt: $(train_fbank_dir)/cuts_train_100h.jsonl.gz | $(data_dir)/kmeans
+	@echo "WARNING: set omp_threads=30 for kmeans training!"
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/learn_kmeans.py \
 		--km-path $(data_dir)/kmeans/kmeans.pt \
     	--n-clusters 500 \

@@ -343,12 +343,16 @@ def learn_kmeans(
         del model
         del train_dl
 
+        logger.info("Shrinking")
         mm = shrink_mm(mm, mm_path, dtype, offset, feat_shape)
 
-        logger.info("Concatenating features")
-        part_feats = mm
+        logger.info("Loading into mem")
+        part_feats = np.asarray(mm)
+        del mm
 
         logging.info(f"data size: {part_feats.shape}")
+        logger.info(f"Loaded {part_feats.nbytes / 1e9:.2f} GB into memory")
+
         if do_training:
             km_model.fit(part_feats)
             joblib.dump(km_model, km_path)
