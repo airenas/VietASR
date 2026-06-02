@@ -169,7 +169,8 @@ $(data_dir)/manifests/cuts_pretrain_dev.jsonl.gz $(data_dir)/manifests/cuts_pret
 
 shards := $(shell seq -f "%03g" 0 $$(($(ssl_parts)-1)))
 ssl_cuts_files := $(foreach r,$(shards),$(data_dir)/manifests/cuts_pretrain_train_$(r).jsonl.gz)	
-ssl_feat_files := $(foreach r,$(shards),$(data_dir)/fbank/cuts_pretrain_train_$(r).jsonl.gz)	
+ssl_feat_files := $(foreach r,$(shards),$(data_dir)/fbank/cuts_pretrain_train_$(r).jsonl.gz)
+# ssl_feat_kmeans_files := $(foreach r,$(shards),$(data_dir)/fbank/cuts_pretrain_train_l_$(r)_kmeans.jsonl.gz)
 
 $(ssl_cuts_files): $(data_dir)/manifests/cuts_pretrain_train.jsonl.gz
 	$(python_cmd) ./SSL/local/split_cuts.py --input $< --output-dir $(data_dir)/manifests --split-into $(ssl_parts)
@@ -215,21 +216,25 @@ decode/test: _decode/test
 ##############################################################
 # Learn Kmeans trained initial models
 ##############################################################
-$(data_dir)/kmeans/kmeans.pt: $(train_fbank_dir)/cuts_train_100h.jsonl.gz | $(data_dir)/kmeans
-	@echo "WARNING: set omp_threads=30 for kmeans training!"
-	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/learn_kmeans.py \
-		--km-path $(data_dir)/kmeans/kmeans.pt \
-    	--n-clusters 500 \
-    	--max-iter 100 \
-    	--files $(train_fbank_dir)/cuts_train_100h.jsonl.gz \
-    	--do-training \
+$(data_dir)/kmeans/features.npy: $(train_fbank_dir)/cuts_train_100h.jsonl.gz | $(data_dir)/kmeans
+	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/learn_kmeans_extract_features.py \
+		--files $(train_fbank_dir)/cuts_train_100h.jsonl.gz \
     	--pretrained-dir $(exp_dir) \
     	--epoch $(epoch) \
 		$(decode_params) \
     	--avg $(avg) \
     	--max-duration $(max_duration) \
     	--checkpoint-type ASR \
-    	--use-averaged-model 1 
+    	--use-averaged-model 1  \
+		--output $(data_dir)/kmeans/features.npy
+$(data_dir)/kmeans/kmeans.pt: $(data_dir)/kmeans/features.npy | $(data_dir)/kmeans
+	$(python_ssl_cmd) ./SSL/zipformer_fbank/extract_kmeans_scripts/learn_kmeans_train.py \
+		--km-path $(data_dir)/kmeans/kmeans.pt \
+		--input $(data_dir)/kmeans/features.npy \
+    	--n-clusters 500 \
+    	--max-iter 100 
+learn/kmeans-features: $(data_dir)/kmeans/features.npy
+.PHONY: learn/kmeans-features		
 learn/kmeans: $(data_dir)/kmeans/kmeans.pt
 .PHONY: learn/kmeans
 ##############################################################
@@ -256,6 +261,10 @@ $(data_dir)/tasks/.extract.done.%: $(data_dir)/tasks/.extract.split $(data_dir)/
     	--max-duration $(max_duration) \
     	--checkpoint-type ASR \
     	--use-averaged-model 1 \
+		--empty-cache-every 100 \
+		--kmeans-chunk-size 32000 \
+		--amp False \
+		--kmeans-device cpu \
 		--task-list $(data_dir)/tasks/extract.lists.$*
 	touch $@		
 extract/labels: $(extract_done_files)

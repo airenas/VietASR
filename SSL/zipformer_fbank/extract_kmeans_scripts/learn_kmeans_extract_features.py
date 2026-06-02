@@ -112,15 +112,7 @@ def get_parser():
     parser.add_argument("--km-path", type=str)
     parser.add_argument("--n-clusters", type=int)
     parser.add_argument("--files", type=str, nargs="*", default=None)
-    parser.add_argument("--do-training", action="store_true")
     parser.add_argument("--src-dir", type=str, default=None)
-    parser.add_argument("--init", default="k-means++")
-    parser.add_argument("--max-iter", default=100, type=int)
-    parser.add_argument("--batch-size", default=10000, type=int)
-    parser.add_argument("--tol", default=0.0, type=float)
-    parser.add_argument("--max-no-improvement", default=100, type=int)
-    parser.add_argument("--n-init", default=20, type=int)
-    parser.add_argument("--reassignment-ratio", default=0.0, type=float)
     parser.add_argument("--seed", type=int, default=42)
 
     # To decide which kind of checkpoint to use
@@ -200,6 +192,12 @@ def get_parser():
         help="The prune range for rnnt loss, it means how many symbols(context)"
              "we are using to compute the loss",
     )
+    parser.add_argument(
+        "--output",
+        type=str,
+        required=True,
+        help="Output of features to train kmeans",
+    )
 
     add_model_arguments(parser)
     return parser
@@ -255,48 +253,21 @@ def grow_mm(mm, mm_path, dtype, new_capacity, offset, feat_shape):
     return np.memmap(mm_path, dtype=dtype, mode="r+", shape=(new_capacity, *feat_shape))
 
 
-def shrink_mm(mm, mm_path, dtype, offset, feat_shape):
-    logger.info(f"Shrinking memmap to {offset}, file {mm_path + '.tmp'}")
-    new_mm = np.memmap(str(mm_path) + ".tmp", dtype=dtype, mode="w+", shape=(offset, *feat_shape))
-    new_mm[:] = mm[:offset]
-    del mm
-    logger.info(f"Moving to {mm_path}")
-    os.replace(str(mm_path) + ".tmp", mm_path)
-    logger.info(f"Loading from file after shrinking {mm_path}")
-    return np.memmap(mm_path, dtype=dtype, mode="r", shape=(offset, *feat_shape))
+def save_mm(mm, output, dtype, offset, feat_shape):
+    logger.info(f"Saving file{output}")
+    arr = np.asarray(mm[:offset], dtype=dtype)
+    np.save(output, arr)
+    logger.info(f"Saved numpy file to {output}")
 
 
-def learn_kmeans(
+def extract_features(
         args,
-        do_training,
         files,
         src_dir,
-        km_path,
-        n_clusters,
         seed,
-        init,
-        max_iter,
-        batch_size,
-        tol,
-        n_init,
-        reassignment_ratio,
-        max_no_improvement,
+        output,
 ):
     np.random.seed(seed)
-    if do_training:
-        km_model = get_km_model(
-            n_clusters,
-            init,
-            max_iter,
-            batch_size,
-            tol,
-            max_no_improvement,
-            n_init,
-            reassignment_ratio,
-        )
-        # km_model.fit(feat)
-    else:
-        km_model = joblib.load(km_path)
     cuts = get_cuts(files, src_dir)
     finetune_datamoddule = FinetuneAsrDataModule(args)
     train_dl = finetune_datamoddule.test_dataloaders(cuts)
@@ -313,7 +284,7 @@ def learn_kmeans(
     num_batches = sum(1 for _ in tqdm(train_dl, desc="Calculating number of batches"))
     train_dl = finetune_datamoddule.test_dataloaders(cuts)
 
-    mm_path = Path(km_path).with_suffix(".mmap")
+    mm_path = Path(output).with_suffix(".mmap")
     dtype = "float32"
 
     capacity = 10000
@@ -345,21 +316,8 @@ def learn_kmeans(
         del model
         del train_dl
 
-        logger.info("Shrinking")
-        mm = shrink_mm(mm, mm_path, dtype, offset, feat_shape)
-
-        logger.info("Loading into mem")
-        part_feats = np.asarray(mm, copy=True)
-        del mm
-
-        logging.info(f"data size: {part_feats.shape}")
-        logger.info(f"Loaded {part_feats.nbytes / 1e9:.2f} GB into memory")
-
-        if do_training:
-            km_model.fit(part_feats)
-            joblib.dump(km_model, km_path)
-        inertia = -km_model.score(part_feats) / len(part_feats)
-        logging.info(f"Total inertia: {inertia:.5f}")
+        logger.info("Saving")
+        save_mm(mm, output, dtype, offset, feat_shape)
     finally:
         try:
             os.remove(mm_path)
@@ -384,19 +342,10 @@ if __name__ == "__main__":
     args.feature_dim = 80
     logging.info(str(args))
 
-    learn_kmeans(
+    extract_features(
         args,
-        do_training=args.do_training,
         files=args.files,
         src_dir=args.src_dir,
-        km_path=args.km_path,
-        n_clusters=args.n_clusters,
         seed=args.seed,
-        init=args.init,
-        max_iter=args.max_iter,
-        batch_size=args.batch_size,
-        tol=args.tol,
-        n_init=args.n_init,
-        reassignment_ratio=args.reassignment_ratio,
-        max_no_improvement=args.max_no_improvement,
+        output=args.output,
     )
