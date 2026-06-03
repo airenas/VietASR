@@ -262,8 +262,6 @@ $(data_dir)/tasks/.extract.done.%: $(data_dir)/tasks/.extract.split $(data_dir)/
     	--checkpoint-type ASR \
     	--use-averaged-model 1 \
 		--empty-cache-every 100 \
-		--kmeans-chunk-size 32000 \
-		--amp False \
 		--kmeans-device cpu \
 		--task-list $(data_dir)/tasks/extract.lists.$*
 	touch $@		

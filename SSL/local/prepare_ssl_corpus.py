@@ -125,6 +125,10 @@ def main():
                     logging.warning(f"Recording {recording.id} is too short ({recording.duration:.2f} secs) - skipping")
                     skip += 1
                     continue
+                if recording.duration > 100:
+                    logging.warning(f"Recording {recording.id} is too long ({recording.duration:.2f} secs) - skipping")
+                    skip += 1
+                    continue    
                 one_cutset = CutSet.from_manifests(
                     recordings=RecordingSet.from_recordings([recording]),
                     supervisions=SupervisionSet.from_segments([segment]),

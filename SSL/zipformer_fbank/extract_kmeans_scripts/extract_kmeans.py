@@ -1,5 +1,6 @@
 # /usr/bin/bash
 import argparse
+from contextlib import nullcontext
 import json
 import logging
 import os
@@ -88,6 +89,25 @@ def get_parser():
     parser.add_argument("--start", type=int)
     parser.add_argument("--end", type=int)
     parser.add_argument("--src-dir", type=str, nargs="*", help="for build list")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda:0",
+        help="Device for feature model forward pass, e.g. cuda:0 or cpu",
+    )
+    parser.add_argument(
+        "--kmeans-device",
+        type=str,
+        default="same",
+        choices=["same", "cuda", "cpu"],
+        help="Device for k-means distance computation",
+    )
+    parser.add_argument(
+        "--empty-cache-every",
+        type=int,
+        default=0,
+        help="If > 0, call torch.cuda.empty_cache() every N batches",
+    )
 
     # To decide which kind of checkpoint to use
     parser.add_argument("--checkpoint-type", type=str, default="pretrain")
@@ -171,13 +191,14 @@ class ApplyKmeans(object):
         self.C_np = self.km_model.cluster_centers_.transpose()
         self.Cnorm_np = (self.C_np**2).sum(0, keepdims=True)
 
-        self.C = torch.from_numpy(self.C_np).to(device)
-        self.Cnorm = torch.from_numpy(self.Cnorm_np).to(device)
+        self.C = torch.from_numpy(self.C_np).to(device=device, dtype=torch.float32)
+        self.Cnorm = torch.from_numpy(self.Cnorm_np).to(device=device, dtype=torch.float32)
 
     @torch.no_grad()
     def __call__(self, x):
         # x: b, d
         if isinstance(x, torch.Tensor):
+            x = x.to(self.C.device, dtype=self.C.dtype, non_blocking=True)
             dist = (
                 x.pow(2).sum(1, keepdim=True) - 2 * torch.matmul(x, self.C) + self.Cnorm
             )
@@ -197,9 +218,16 @@ def extract_feature(batch, model):
     device = next(model.parameters()).device
     audio = batch["audio"].to(device)
     padding_mask = batch["padding_mask"].to(device)
-    encoder_out, encoder_out_lens = model.forward_encoder(
-        audio, padding_mask, do_final_down_sample=False
+    autocast_ctx = (
+        torch.autocast(device_type="cuda", dtype=torch.float16)
+        if device.type == "cuda"
+        else nullcontext()
     )
+    with torch.inference_mode():
+        with autocast_ctx:
+            encoder_out, encoder_out_lens = model.forward_encoder(
+                audio, padding_mask, do_final_down_sample=False
+            )
     b, l, d = encoder_out.shape
     holder = []
     for i in range(b):
@@ -230,12 +258,20 @@ def main(args):
     args.vocab_size = sp.get_piece_size()
 
     args.feature_dim = 80
+    logging.info(f"Arguments: {args}")
 
     logging.info(str(args))
-    device = torch.device("cuda:0")
-    model = ApplyKmeans(args.model_path, device)
+    feature_device = torch.device(args.device)
+    if args.kmeans_device == "same":
+        kmeans_device = feature_device
+    elif args.kmeans_device == "cuda":
+        kmeans_device = torch.device("cuda:0")
+    else:
+        kmeans_device = torch.device("cpu")
 
-    feature_model = get_model(args, device)
+    model = ApplyKmeans(args.model_path, kmeans_device)
+
+    feature_model = get_model(args, feature_device)
 
     # apply_kmeans = ApplyKmeans(km_path)
     task_file = args.task_list
@@ -249,6 +285,8 @@ def main(args):
     for src, tgt in tqdm.tqdm(task_lis):
         # if os.path.isfile(tgt):
         #     continue
+        torch.cuda.empty_cache()
+
         logger.info(f"Processing {src} to {tgt}")
         cuts = CutSet.from_file(src)
         km_dict = {}
@@ -257,11 +295,16 @@ def main(args):
 
         logging.info(f"Extracting kmeans labels")
         logging.info(f"Calc dataExtracting kmeans labels")
+
         total_batches = sum(1 for _ in tqdm.tqdm(test_dl, desc="Counting batches", unit="batch"))
+        # total_batches = None
 
         test_dl = finetune_datamoddule.test_dataloaders(cuts)
         for i, batch in enumerate(tqdm.tqdm(test_dl, desc="Extracting kmeans label", unit="batch", total=total_batches)):
-            sub_routine(batch, feature_model, model, km_dict, device)
+            sub_routine(batch, feature_model, model, km_dict, device=feature_device)
+            if args.empty_cache_every > 0 and feature_device.type == "cuda" and (i + 1) % args.empty_cache_every == 0:
+                logging.info(f"Emptying CUDA cache after {i+1} batches")
+                torch.cuda.empty_cache()
 
         def add_label(km_dict):
             def f(cut):
@@ -270,11 +313,9 @@ def main(args):
                 return cut
 
             return f
-
         cuts = cuts.map(add_label(km_dict))
-
         cuts.to_file(tgt)
-        logger.info("finished successfully")
+    logger.info("finished successfully")
 
 
 if __name__ == "__main__":
