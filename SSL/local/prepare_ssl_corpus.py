@@ -125,7 +125,7 @@ def main():
                     logging.warning(f"Recording {recording.id} is too short ({recording.duration:.2f} secs) - skipping")
                     skip += 1
                     continue
-                if recording.duration > 100:
+                if recording.duration > 120:
                     logging.warning(f"Recording {recording.id} is too long ({recording.duration:.2f} secs) - skipping")
                     skip += 1
                     continue    
