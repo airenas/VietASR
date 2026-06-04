@@ -37,9 +37,12 @@ def get_args():
 
 def _parse_utterance(
         part_path: Pathlike,
+        corpus_dir: Pathlike,
         lang: Optional[str] = None,
 ) -> Optional[Tuple[Recording, SupervisionSegment]]:
-    recording_id = f"{os.path.basename(os.path.dirname(str(part_path)))}-{os.path.splitext(os.path.basename(str(part_path)))[0]}"
+    rel = part_path.resolve().relative_to(corpus_dir.resolve())
+    dirs = rel.parts[:-1][-3:]
+    recording_id = "-".join([*dirs, rel.stem])
     audio_path = part_path
     if not audio_path.is_file():
         logging.warning(f"No such file: {audio_path}")
@@ -114,7 +117,7 @@ def main():
 
             futures = []
             for wav_path in tqdm(wav_paths, desc="Distributing tasks"):
-                futures.append(ex.submit(_parse_utterance, Path(wav_path), "lt"))
+                futures.append(ex.submit(_parse_utterance, Path(wav_path), corpus_dir, "lt"))
 
             for future in tqdm(futures, desc="Processing"):
                 result = future.result()
