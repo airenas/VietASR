@@ -35,14 +35,18 @@ def get_args():
     return parser.parse_args()
 
 
+def get_id_from_path(part_path: Pathlike):
+    p1 = part_path.parent
+    p2 = p1.parent
+    file = part_path.stem
+    return f"{p2.name}-{p1.name}-{file}"
+
+
 def _parse_utterance(
         part_path: Pathlike,
-        corpus_dir: Pathlike,
         lang: Optional[str] = None,
 ) -> Optional[Tuple[Recording, SupervisionSegment]]:
-    rel = part_path.resolve().relative_to(corpus_dir.resolve())
-    dirs = rel.parts[:-1][-3:]
-    recording_id = "-".join([*dirs, rel.stem])
+    recording_id = get_id_from_path(part_path)
     audio_path = part_path
     if not audio_path.is_file():
         logging.warning(f"No such file: {audio_path}")
@@ -117,7 +121,7 @@ def main():
 
             futures = []
             for wav_path in tqdm(wav_paths, desc="Distributing tasks"):
-                futures.append(ex.submit(_parse_utterance, Path(wav_path), corpus_dir, "lt"))
+                futures.append(ex.submit(_parse_utterance, Path(wav_path), "lt"))
 
             for future in tqdm(futures, desc="Processing"):
                 result = future.result()
@@ -131,7 +135,7 @@ def main():
                 if recording.duration > 120:
                     logging.warning(f"Recording {recording.id} is too long ({recording.duration:.2f} secs) - skipping")
                     skip += 1
-                    continue    
+                    continue
                 one_cutset = CutSet.from_manifests(
                     recordings=RecordingSet.from_recordings([recording]),
                     supervisions=SupervisionSet.from_segments([segment]),
