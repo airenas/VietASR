@@ -176,7 +176,6 @@ $(ssl_cuts_files): $(data_dir)/manifests/cuts_pretrain_train.jsonl.gz
 	$(python_cmd) ./SSL/local/split_cuts.py --input $< --output-dir $(data_dir)/manifests --split-into $(ssl_parts)
 $(data_dir)/fbank/%: $(data_dir)/manifests/% | $(data_dir)/fbank
 	$(python_ssl_cmd) ./SSL/local/compute_fbank.py --input $^ --output $@ 
-
 prepare/ssl: $(ssl_feat_files) $(data_dir)/fbank/cuts_pretrain_dev.jsonl.gz
 .PHONY: prepare/ssl
 ##############################################################
@@ -267,6 +266,11 @@ $(data_dir)/tasks/.extract.done.%: $(data_dir)/tasks/.extract.split $(data_dir)/
 	touch $@		
 extract/labels: $(extract_done_files)
 .PHONY: extract/labels
+ssl_feat_fix_files := $(foreach r,$(shards),$(train_fbank_dir)/cuts_pretrain_train_l_$(r)_kmeans.jsonl.gz)
+$(train_fbank_dir)/cuts_pretrain_%_kmeans.jsonl.gz: $(data_dir)/fbank/cuts_pretrain_%_kmeans.jsonl.gz | $(train_fbank_dir)
+	$(python_cmd) ./ASR/local/fix_cuts_path_jsonl.py --input $< --output $@ --storage_path_dir $(storage_path) --new_storage_path_dir $(new_storage_path)
+fix/ssl-features: $(ssl_feat_fix_files) $(train_fbank_dir)/cuts_pretrain_dev_l_kmeans.jsonl.gz
+.PHONY: fix/ssl-features
 ##############################################################
 # PRETRAIN
 # need 250k iterations <- from k2SSL
@@ -295,7 +299,7 @@ pretrain:
 		$(pretrain_params) \
 		--save-every-n 15000 \
 		--master-port 12356 \
-		--manifest-dir $(data_dir)/fbank \
+		--manifest-dir $(train_fbank_dir) \
 		--manifest-prefix cuts_pretrain_
 .PHONY: pretrain
 ##############################################################
@@ -319,7 +323,7 @@ finetune:
 		--num-epochs $(epoch_finetune) \
 		--start-epoch $(start_epoch) \
 		--sample-rate 100 \
-		--manifest-dir $(data_dir)/fbank \
+		--manifest-dir $(train_fbank_dir) \
 		--bpe-model $(lang_dir)/bpe.model \
 		--exp-dir $(finetune_exp_dir) \
 		--pretrained-checkpoint-path $(pretrain_exp_dir)/epoch-$(epoch_pretrain).pt \
@@ -338,7 +342,7 @@ _decode/finetune/%:
 		--avg $(avg) \
 		--use-averaged-model 1 \
 		--exp-dir $(finetune_exp_dir) \
-		--manifest-dir $(data_dir)/fbank \
+		--manifest-dir $(train_fbank_dir) \
 		--max-duration $(max_duration) \
 		$(decode_fine_params) \
 		--decoding-method greedy_search \
