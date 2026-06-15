@@ -68,6 +68,12 @@ info:
 	@echo "ssl_parts: $(ssl_parts)"	
 	@echo "ssl_feat_files: $(ssl_feat_files)"	
 	@echo "omp_threads: $(omp_threads)"
+	@echo "multi_node: $(multi_node)"
+	@echo "RANK: $(RANK)"
+	@echo "LOCAL_RANK: $(LOCAL_RANK)"
+	@echo "MASTER_ADDR: $(MASTER_ADDR)"
+	@echo "MASTER_PORT: $(MASTER_PORT)"
+	@echo "hostname: $(shell hostname)"
 		
 .PHONY: info	
 
@@ -186,8 +192,9 @@ prepare/ssl: $(ssl_feat_files) $(data_dir)/fbank/cuts_pretrain_dev.jsonl.gz
 model_params?=--num-encoder-layers 2,2,4,5,4,2 \
 		--feedforward-dim 768,1536,2048,3072,2048,1536 \
 		--encoder-dim 256,512,768,1024,768,512 \
-		--encoder-unmasked-dim 256,256,256,320,256,256 \
-		--use-ctc 1 --use-transducer 1
+		--encoder-unmasked-dim 256,256,256,320,256,256
+train_model_params?=$(model_params) \
+		--use-ctc 1 --use-transducer 1		
 
 train_params?=--use-fp16 1 --train-cuts 4000h --max-duration $(max_duration) --enable-musan 0 --enable-spec-aug 1 --seed 1332 --master-port 12356 \
 	$(model_params) --bpe-model $(lang_dir)/bpe.model --base-lr 0.045
@@ -196,9 +203,9 @@ train: $(train_fbank_dir)/cuts_train.jsonl.gz $(train_fbank_dir)/cuts_dev.jsonl.
 		--num-epochs $(epoch_train) --start-epoch $(start_epoch) \
 		--bpe-model $(lang_dir)/bpe.model --manifest-dir $(train_fbank_dir) \
 		--exp-dir $(exp_dir) \
-		$(train_params) 
+		$(train_model_params) 
 
-decode_params?=--bpe-model $(lang_dir)/bpe.model $(model_params) 
+decode_params?=--bpe-model $(lang_dir)/bpe.model $(train_model_params) 
 _decode/%: 
 	$(python_cmd) ./ASR/zipformer/decode.py \
     --epoch $(epoch) \
@@ -277,9 +284,10 @@ fix/ssl-features: $(ssl_feat_fix_files) $(train_fbank_dir)/cuts_pretrain_dev_l_k
 # max_duration=600 for ADA 4000
 ##############################################################
 pretrain_params?=--use-fp16 1 --max-duration $(max_duration) $(model_params) --base-lr 0.045
-
+multi_node?=0
 pretrain:
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/pretrain.py \
+		--use-multi-node $(multi_node) \
 		--world-size $(gpus) \
 		--num-epochs $(epoch_pretrain) \
 		--start-epoch $(start_epoch)  \

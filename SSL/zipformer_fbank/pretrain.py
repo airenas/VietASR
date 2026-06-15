@@ -57,7 +57,13 @@ from icefall.checkpoint import (
     save_checkpoint_with_global_batch_idx,
     update_averaged_model,
 )
-from icefall.dist import cleanup_dist, setup_dist
+from icefall.dist import (
+    cleanup_dist,
+    setup_dist,
+    get_local_rank,
+    get_rank,
+    get_world_size,
+)
 from icefall.env import get_env_info
 from icefall.hooks import register_inf_check_hooks
 from icefall.utils import (
@@ -444,6 +450,15 @@ def add_model_arguments(parser: argparse.ArgumentParser):
 def get_parser():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    parser.add_argument(
+        "--use-multi-node",
+        type=str2bool,
+        default=False,
+        help="""True if using multi-node multi-GPU.
+        You are not supposed to set it directly.
+        """,
     )
 
     parser.add_argument(
@@ -947,7 +962,7 @@ def compute_validation_loss(
         assert loss.requires_grad is False
         tot_loss = tot_loss + loss_info
 
-    params.dev_batches =  batches
+    params.dev_batches = batches
 
     if world_size > 1:
         tot_loss.reduce(loss.device)
@@ -1192,8 +1207,15 @@ def run(rank, world_size, args):
     params.update(vars(args))
 
     fix_random_seed(params.seed)
+
+    if params.use_multi_node:
+        local_rank = get_local_rank()
+    else:
+        local_rank = rank
+    logging.info(f"rank: {rank}, world_size: {world_size}, local_rank: {local_rank}")
+
     if world_size > 1:
-        setup_dist(rank, world_size, params.master_port)
+        setup_dist(rank, world_size, params.master_port, params.use_multi_node)
 
     setup_logger(f"{params.exp_dir}/log/log-train")
     logging.info("Training started")
@@ -1205,8 +1227,8 @@ def run(rank, world_size, args):
 
     device = torch.device("cpu")
     if torch.cuda.is_available():
-        device = torch.device("cuda", rank)
-    logging.info(f"Device: {device}")
+        device = torch.device("cuda", local_rank)
+    logging.info(f"Device: {device}, rank: {rank}, local_rank: {local_rank}")
     logging.info(params)
 
     logging.info("About to create model")
@@ -1229,7 +1251,7 @@ def run(rank, world_size, args):
     model.to(device)
     if world_size > 1:
         logging.info("Using DDP")
-        model = DDP(model, device_ids=[rank], find_unused_parameters=True)
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
 
     optimizer = ScaledAdam(
         get_parameter_groups_with_lrs(model, lr=params.base_lr, include_names=True),
@@ -1452,12 +1474,18 @@ def main():
     args = parser.parse_args()
     args.exp_dir = Path(args.exp_dir)
 
-    world_size = args.world_size
-    assert world_size >= 1
-    if world_size > 1:
-        mp.spawn(run, args=(world_size, args), nprocs=world_size, join=True)
+    if args.use_multi_node:
+        rank = get_rank()
+        world_size = get_world_size()
+        args.world_size = world_size
+        run(rank=rank, world_size=world_size, args=args)
     else:
-        run(rank=0, world_size=1, args=args)
+        world_size = args.world_size
+        assert world_size >= 1
+        if world_size > 1:
+            mp.spawn(run, args=(world_size, args), nprocs=world_size, join=True)
+        else:
+            run(rank=0, world_size=1, args=args)
 
 
 torch.set_num_threads(1)
