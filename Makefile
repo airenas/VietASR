@@ -283,7 +283,8 @@ fix/ssl-features: $(ssl_feat_fix_files) $(train_fbank_dir)/cuts_pretrain_dev_l_k
 # need 250k iterations <- from k2SSL
 # max_duration=600 for ADA 4000
 ##############################################################
-pretrain_params?=--use-fp16 1 --max-duration $(max_duration) $(model_params) --base-lr 0.045
+pretrain_params?=--use-fp16 1 --max-duration $(max_duration) $(model_params) --base-lr 0.035 \
+	--warmup-start 0.1
 multi_node?=0
 pretrain:
 	$(python_ssl_cmd) ./SSL/zipformer_fbank/pretrain.py \
